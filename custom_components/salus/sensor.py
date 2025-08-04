@@ -45,10 +45,17 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
-        # Name of the data. For logging purposes.
         name="sensor",
         update_method=async_update_data,
-        # Polling interval. Will only be polled if there are subscribers.
+        update_interval=timedelta(seconds=30),
+    )
+
+    coordinator = DataUpdateCoordinator(
+        config_entry=config_entry,
+        hass,
+        _LOGGER,
+        name="sensor",
+        update_method=async_update_data,
         update_interval=timedelta(seconds=30),
     )
 
