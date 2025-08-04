@@ -43,14 +43,6 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             return gateway.get_sensor_devices()
 
     coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        name="sensor",
-        update_method=async_update_data,
-        update_interval=timedelta(seconds=30),
-    )
-
-    coordinator = DataUpdateCoordinator(
         config_entry=config_entry,
         hass,
         _LOGGER,
