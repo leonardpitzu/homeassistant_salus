@@ -1,43 +1,37 @@
-"""Support for cover (roller shutter) devices."""
-from datetime import timedelta
+"""Support for Salus iT600 covers (roller shutters / blinds)."""
+
+from __future__ import annotations
+
+import asyncio
 import logging
-import async_timeout
+from datetime import timedelta
 
-import voluptuous as vol
-from homeassistant.components.cover import PLATFORM_SCHEMA, ATTR_POSITION, CoverEntity
-
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_TOKEN
+from homeassistant.components.cover import (
+    ATTR_POSITION,
+    CoverEntity,
+    CoverEntityFeature,
 )
-
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DOMAIN
+from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_TOKEN): cv.string,
-    }
-)
 
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Salus cover devices from a config entry."""
+    gateway: IT600Gateway = hass.data[DOMAIN][config_entry.entry_id]
 
-    gateway = hass.data[DOMAIN][config_entry.entry_id]
-
-    async def async_update_data():
-        """Fetch data from API endpoint.
-
-        This is the place to pre-process the data to lookup tables
-        so entities can quickly look up their data.
-        """
-        async with async_timeout.timeout(10):
+    async def async_update_data() -> dict:
+        async with asyncio.timeout(10):
             await gateway.poll_status()
             return gateway.get_cover_devices()
 
@@ -45,119 +39,108 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         hass,
         _LOGGER,
         config_entry=config_entry,
-        name="sensor",
+        name="salus_cover",
         update_method=async_update_data,
         update_interval=timedelta(seconds=30),
     )
 
-    # Fetch initial data so we have data when entities subscribe
     await coordinator.async_refresh()
 
-    async_add_entities(SalusCover(coordinator, idx, gateway) for idx
-                       in coordinator.data)
-
-
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the cover platform."""
-    pass
+    async_add_entities(
+        SalusCover(coordinator, idx, gateway) for idx in coordinator.data
+    )
 
 
 class SalusCover(CoverEntity):
-    """Representation of a binary sensor."""
+    """Representation of a Salus cover."""
 
-    def __init__(self, coordinator, idx, gateway):
-        """Initialize the sensor."""
+    _attr_has_entity_name = False
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        idx: str,
+        gateway: IT600Gateway,
+    ) -> None:
         self._coordinator = coordinator
         self._idx = idx
         self._gateway = gateway
 
-    async def async_update(self):
-        """Update the entity.
-        Only used by the generic entity update service.
-        """
+    async def async_update(self) -> None:
         await self._coordinator.async_request_refresh()
 
-    async def async_added_to_hass(self):
-        """When entity is added to hass."""
+    async def async_added_to_hass(self) -> None:
         self.async_on_remove(
             self._coordinator.async_add_listener(self.async_write_ha_state)
         )
 
     @property
-    def available(self):
-        """Return if entity is available."""
-        return self._coordinator.data.get(self._idx).available
+    def _device(self):
+        return self._coordinator.data.get(self._idx)
 
     @property
-    def device_info(self):
-        """Return the device info."""
-        return {
-            "name": self._coordinator.data.get(self._idx).name,
-            "identifiers": {("salus", self._coordinator.data.get(self._idx).unique_id)},
-            "manufacturer": self._coordinator.data.get(self._idx).manufacturer,
-            "model": self._coordinator.data.get(self._idx).model,
-            "sw_version": self._coordinator.data.get(self._idx).sw_version
-        }
-
-    @property
-    def unique_id(self):
-        """Return the unique id."""
-        return self._coordinator.data.get(self._idx).unique_id
-
-    @property
-    def should_poll(self):
-        """No need to poll. Coordinator notifies entity of updates."""
+    def should_poll(self) -> bool:
         return False
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._coordinator.data.get(self._idx).name
+    def available(self) -> bool:
+        return self._device.available
 
     @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        return self._coordinator.data.get(self._idx).supported_features
+    def unique_id(self) -> str:
+        return self._device.unique_id
 
     @property
-    def device_class(self):
-        """Return the device class of the sensor."""
-        return self._coordinator.data.get(self._idx).device_class
+    def name(self) -> str:
+        return self._device.name
 
     @property
-    def current_cover_position(self):
-        """Return the current position of the cover."""
-        return self._coordinator.data.get(self._idx).current_cover_position
+    def supported_features(self) -> CoverEntityFeature:
+        return CoverEntityFeature(self._device.supported_features)
 
     @property
-    def is_opening(self):
-        """Return if the cover is opening or not."""
-        return self._coordinator.data.get(self._idx).is_opening
+    def device_class(self) -> str | None:
+        return self._device.device_class
 
     @property
-    def is_closing(self):
-        """Return if the cover is closing or not."""
-        return self._coordinator.data.get(self._idx).is_closing
+    def current_cover_position(self) -> int | None:
+        return self._device.current_cover_position
 
     @property
-    def is_closed(self):
-        """Return if the cover is closed."""
-        return self._coordinator.data.get(self._idx).is_closed
+    def is_opening(self) -> bool | None:
+        return self._device.is_opening
 
-    async def async_open_cover(self, **kwargs):
-        """Open the cover."""
+    @property
+    def is_closing(self) -> bool | None:
+        return self._device.is_closing
+
+    @property
+    def is_closed(self) -> bool:
+        return self._device.is_closed
+
+    @property
+    def device_info(self) -> dict:
+        d = self._device
+        return {
+            "name": d.name,
+            "identifiers": {(DOMAIN, d.unique_id)},
+            "manufacturer": d.manufacturer,
+            "model": d.model,
+            "sw_version": d.sw_version,
+        }
+
+    async def async_open_cover(self, **kwargs) -> None:
         await self._gateway.open_cover(self._idx)
         await self._coordinator.async_request_refresh()
 
-    async def async_close_cover(self, **kwargs):
-        """Close the cover."""
+    async def async_close_cover(self, **kwargs) -> None:
         await self._gateway.close_cover(self._idx)
         await self._coordinator.async_request_refresh()
 
-    async def async_set_cover_position(self, **kwargs):
-        """Move the cover to a specific position."""
+    async def async_set_cover_position(self, **kwargs) -> None:
         position = kwargs.get(ATTR_POSITION)
         if position is None:
             return
         await self._gateway.set_cover_position(self._idx, position)
         await self._coordinator.async_request_refresh()
+

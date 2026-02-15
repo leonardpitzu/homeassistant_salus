@@ -1,4 +1,7 @@
 """Config flow to configure Salus iT600 component."""
+
+from __future__ import annotations
+
 import logging
 
 import voluptuous as vol
@@ -6,11 +9,9 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_TOKEN
 
-from pyit600.exceptions import IT600AuthenticationError, IT600ConnectionError
-from pyit600.gateway import IT600Gateway
-
-# pylint: disable=unused-import
 from .const import DOMAIN
+from .exceptions import IT600AuthenticationError, IT600ConnectionError
+from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,14 +32,16 @@ class SalusFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
     VERSION = 1
     CONNECTION_CLASS = config_entries.CONN_CLASS_LOCAL_POLL
 
-    async def async_step_user(self, user_input=None):
+    async def async_step_user(
+        self, user_input: dict[str, str] | None = None
+    ) -> config_entries.ConfigFlowResult:
         """Handle a flow initialized by the user to configure a gateway."""
-        errors = {}
-        if user_input is not None:
-            token = user_input[CONF_TOKEN]
-            host = user_input[CONF_HOST]
+        errors: dict[str, str] = {}
 
-            # Try to connect to a Salus Gateway.
+        if user_input is not None:
+            host = user_input[CONF_HOST]
+            token = user_input[CONF_TOKEN]
+
             gateway = IT600Gateway(host=host, euid=token)
             try:
                 unique_id = await gateway.connect()
@@ -57,7 +60,12 @@ class SalusFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "connect_error"
             except IT600AuthenticationError:
                 errors["base"] = "auth_error"
+            finally:
+                await gateway.close()
 
-        schema = vol.Schema(GATEWAY_SETTINGS)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=vol.Schema(GATEWAY_SETTINGS),
+            errors=errors,
+        )
 
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)

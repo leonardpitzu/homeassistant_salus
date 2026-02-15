@@ -1,51 +1,46 @@
-"""Support for climate devices (thermostats)."""
-from datetime import timedelta
+"""Support for Salus iT600 climate devices (thermostats)."""
+
+from __future__ import annotations
+
+import asyncio
 import logging
-import async_timeout
+from datetime import timedelta
 
-import voluptuous as vol
-from homeassistant.components.climate import PLATFORM_SCHEMA, ClimateEntity
-from homeassistant.components.climate.const import (
-    HVACMode,
+from homeassistant.components.climate import (
+    ClimateEntity,
     ClimateEntityFeature,
-    FAN_OFF,
-    FAN_AUTO,
-    FAN_LOW,
-    FAN_MEDIUM,
-    FAN_HIGH
+    HVACAction,
+    HVACMode,
 )
-from homeassistant.const import (
-    ATTR_TEMPERATURE,
-    CONF_HOST,
-    CONF_TOKEN
-)
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import ATTR_TEMPERATURE, UnitOfTemperature
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
-from .const import DOMAIN
+from .const import DOMAIN, SUPPORT_FAN_MODE
+from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_TOKEN): cv.string,
-    }
-)
+_HVAC_ACTION_MAP: dict[str, HVACAction] = {
+    "off": HVACAction.OFF,
+    "heating": HVACAction.HEATING,
+    "cooling": HVACAction.COOLING,
+    "idle": HVACAction.IDLE,
+}
 
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Salus thermostats from a config entry."""
+    gateway: IT600Gateway = hass.data[DOMAIN][config_entry.entry_id]
 
-    gateway = hass.data[DOMAIN][config_entry.entry_id]
-
-    async def async_update_data():
-        """Fetch data from API endpoint.
-
-        This is the place to pre-process the data to lookup tables
-        so entities can quickly look up their data.
-        """
-        async with async_timeout.timeout(10):
+    async def async_update_data() -> dict:
+        async with asyncio.timeout(10):
             await gateway.poll_status()
             return gateway.get_climate_devices()
 
@@ -53,194 +48,165 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         hass,
         _LOGGER,
         config_entry=config_entry,
-        name="sensor",
+        name="salus_climate",
         update_method=async_update_data,
-        update_interval=timedelta(seconds=30)
+        update_interval=timedelta(seconds=30),
     )
 
-    # Fetch initial data so we have data when entities subscribe
     await coordinator.async_refresh()
 
-    async_add_entities(SalusThermostat(coordinator, idx, gateway) for idx
-                       in coordinator.data)
-
-
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the sensor platform."""
-    pass
+    async_add_entities(
+        SalusThermostat(coordinator, idx, gateway) for idx in coordinator.data
+    )
 
 
 class SalusThermostat(ClimateEntity):
-    """Representation of a Sensor."""
+    """Representation of a Salus thermostat."""
 
-    def __init__(self, coordinator, idx, gateway):
-        """Initialize the thermostat."""
+    _attr_has_entity_name = False
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        idx: str,
+        gateway: IT600Gateway,
+    ) -> None:
         self._coordinator = coordinator
         self._idx = idx
         self._gateway = gateway
 
-    async def async_update(self):
-        """Update the entity.
-        Only used by the generic entity update service.
-        """
+    # ── HA plumbing ─────────────────────────────────────────────────
+
+    async def async_update(self) -> None:
         await self._coordinator.async_request_refresh()
 
-    async def async_added_to_hass(self):
-        """When entity is added to hass."""
+    async def async_added_to_hass(self) -> None:
         self.async_on_remove(
             self._coordinator.async_add_listener(self.async_write_ha_state)
         )
-    
-    @property
-    def supported_features(self):
-        """Return the list of supported features."""
-        # definetly needs a better approach
-        # return self._coordinator.data.get(self._idx).supported_features
-
-        supported_features = ClimateEntityFeature.TURN_ON | ClimateEntityFeature.TURN_OFF | ClimateEntityFeature.TARGET_TEMPERATURE | ClimateEntityFeature.PRESET_MODE | ClimateEntityFeature.FAN_MODE
-        return supported_features
 
     @property
-    def available(self):
-        """Return if entity is available."""
-        return self._coordinator.data.get(self._idx).available
+    def _device(self):
+        return self._coordinator.data.get(self._idx)
 
     @property
-    def device_info(self):
-        """Return the device info."""
-        return {
-            "name": self._coordinator.data.get(self._idx).name,
-            "identifiers": {("salus", self._coordinator.data.get(self._idx).unique_id)},
-            "manufacturer": self._coordinator.data.get(self._idx).manufacturer,
-            "model": self._coordinator.data.get(self._idx).model,
-            "sw_version": self._coordinator.data.get(self._idx).sw_version
-        }
-
-    @property
-    def unique_id(self):
-        """Return the unique id."""
-        return self._coordinator.data.get(self._idx).unique_id
-
-    @property
-    def should_poll(self):
-        """No need to poll. Coordinator notifies entity of updates."""
+    def should_poll(self) -> bool:
         return False
 
     @property
-    def name(self):
-        """Return the name of the Radio Thermostat."""
-        return self._coordinator.data.get(self._idx).name
+    def available(self) -> bool:
+        return self._device.available
 
     @property
-    def temperature_unit(self):
-        """Return the unit of measurement."""
-        return self._coordinator.data.get(self._idx).temperature_unit
+    def unique_id(self) -> str:
+        return self._device.unique_id
 
     @property
-    def precision(self):
-        """Return the precision of the system."""
-        return self._coordinator.data.get(self._idx).precision
+    def name(self) -> str:
+        return self._device.name
 
     @property
-    def current_temperature(self):
-        """Return the current temperature."""
-        return self._coordinator.data.get(self._idx).current_temperature
+    def device_info(self) -> dict:
+        d = self._device
+        return {
+            "name": d.name,
+            "identifiers": {(DOMAIN, d.unique_id)},
+            "manufacturer": d.manufacturer,
+            "model": d.model,
+            "sw_version": d.sw_version,
+        }
+
+    # ── Climate specifics ───────────────────────────────────────────
 
     @property
-    def current_humidity(self):
-        """Return the current humidity."""
-        return self._coordinator.data.get(self._idx).current_humidity
+    def supported_features(self) -> ClimateEntityFeature:
+        features = (
+            ClimateEntityFeature.TURN_ON
+            | ClimateEntityFeature.TURN_OFF
+            | ClimateEntityFeature.TARGET_TEMPERATURE
+            | ClimateEntityFeature.PRESET_MODE
+        )
+        if self._device.supported_features & SUPPORT_FAN_MODE:
+            features |= ClimateEntityFeature.FAN_MODE
+        return features
 
     @property
-    def hvac_mode(self):
-        """Return the current operation. head, cool idle."""
-        return self._coordinator.data.get(self._idx).hvac_mode
+    def temperature_unit(self) -> str:
+        return UnitOfTemperature.CELSIUS
 
     @property
-    def hvac_modes(self):
-        """Return the operation modes list."""
-        return self._coordinator.data.get(self._idx).hvac_modes
+    def precision(self) -> float:
+        return self._device.precision
 
     @property
-    def hvac_action(self):
-        """Return the current running hvac operation if supported."""
-        return self._coordinator.data.get(self._idx).hvac_action
+    def current_temperature(self) -> float | None:
+        return self._device.current_temperature
 
     @property
-    def target_temperature(self):
-        """Return the temperature we try to reach."""
-        return self._coordinator.data.get(self._idx).target_temperature
+    def current_humidity(self) -> float | None:
+        return self._device.current_humidity
 
     @property
-    def max_temp(self):
-        return self._coordinator.data.get(self._idx).max_temp
+    def target_temperature(self) -> float | None:
+        return self._device.target_temperature
 
     @property
-    def min_temp(self):
-        return self._coordinator.data.get(self._idx).min_temp
+    def max_temp(self) -> float:
+        return self._device.max_temp
 
     @property
-    def preset_mode(self):
-        return self._coordinator.data.get(self._idx).preset_mode
+    def min_temp(self) -> float:
+        return self._device.min_temp
 
     @property
-    def preset_modes(self):
-        return self._coordinator.data.get(self._idx).preset_modes
+    def hvac_mode(self) -> HVACMode:
+        return HVACMode(self._device.hvac_mode)
 
     @property
-    def fan_mode(self):
-        return self._coordinator.data.get(self._idx).fan_mode
+    def hvac_modes(self) -> list[HVACMode]:
+        return [HVACMode(m) for m in self._device.hvac_modes]
 
     @property
-    def fan_modes(self):
-        return self._coordinator.data.get(self._idx).fan_modes
+    def hvac_action(self) -> HVACAction | None:
+        raw = self._device.hvac_action
+        return _HVAC_ACTION_MAP.get(raw)
 
     @property
-    def locked(self):
-        return self._coordinator.data.get(self._idx).locked
+    def preset_mode(self) -> str | None:
+        return self._device.preset_mode
 
-    async def async_set_temperature(self, **kwargs):
-        """Set new target temperature."""
+    @property
+    def preset_modes(self) -> list[str]:
+        return self._device.preset_modes
+
+    @property
+    def fan_mode(self) -> str | None:
+        return self._device.fan_mode
+
+    @property
+    def fan_modes(self) -> list[str] | None:
+        return self._device.fan_modes
+
+    # ── Commands ────────────────────────────────────────────────────
+
+    async def async_set_temperature(self, **kwargs) -> None:
         temperature = kwargs.get(ATTR_TEMPERATURE)
         if temperature is None:
             return
-        await self._gateway.set_climate_device_temperature(self._idx, temperature)
+        await self._gateway.set_climate_device_temperature(
+            self._idx, temperature
+        )
         await self._coordinator.async_request_refresh()
 
-    # TODO: Not listed in methods here https://developers.home-assistant.io/docs/core/entity/climate/#methods
-    # async def async_set_locked(self, locked):
-    #     """Set locked (true, false)."""
-    #     await self._gateway.set_climate_device_locked(self._idx, locked)
-    #     await self._coordinator.async_request_refresh()
-
-    async def async_set_fan_mode(self, fan_mode):
-        """Set fan speed (auto, low, medium, high, off)."""
-        _LOGGER.info('set_fan_mode: ' + str(fan_mode))
-        if fan_mode == FAN_OFF:
-            mode = "Off"
-        elif fan_mode == FAN_LOW:
-            mode = "Low"
-        elif fan_mode == FAN_MEDIUM:
-            mode = "Medium"
-        elif fan_mode == FAN_HIGH:
-            mode = "High"
-        else:
-            mode = "Auto"
-        await self._gateway.set_climate_device_fan_mode(self._idx, mode)
+    async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
+        await self._gateway.set_climate_device_mode(self._idx, hvac_mode)
         await self._coordinator.async_request_refresh()
 
-    async def async_set_hvac_mode(self, hvac_mode):
-        """Set operation mode (auto, heat, cool)."""
-        if hvac_mode == HVACMode.HEAT:
-            mode = "heat"
-        elif hvac_mode == HVACMode.COOL:
-            mode = "cool"
-        else:
-            mode = "auto"
-        await self._gateway.set_climate_device_mode(self._idx, mode)
-        await self._coordinator.async_request_refresh()
-
-    async def async_set_preset_mode(self, preset_mode):
-        """Set preset mode (Off, Permanent Hold, Eco, Temporary Hold, Follow Schedule)"""
+    async def async_set_preset_mode(self, preset_mode: str) -> None:
         await self._gateway.set_climate_device_preset(self._idx, preset_mode)
         await self._coordinator.async_request_refresh()
+
+    async def async_set_fan_mode(self, fan_mode: str) -> None:
+        await self._gateway.set_climate_device_fan_mode(self._idx, fan_mode)
+        await self._coordinator.async_request_refresh()
+

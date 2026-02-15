@@ -1,43 +1,33 @@
-"""Support for binary (door/window/smoke/leak) sensors."""
-from datetime import timedelta
+"""Support for Salus iT600 binary sensors (door/window/smoke/leak)."""
+
+from __future__ import annotations
+
+import asyncio
 import logging
-import async_timeout
+from datetime import timedelta
 
-import voluptuous as vol
-from homeassistant.components.binary_sensor import PLATFORM_SCHEMA, BinarySensorEntity
-
-from homeassistant.const import (
-    CONF_HOST,
-    CONF_TOKEN
-)
-
-import homeassistant.helpers.config_validation as cv
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.components.binary_sensor import BinarySensorEntity
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DOMAIN
+from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Required(CONF_HOST): cv.string,
-        vol.Required(CONF_TOKEN): cv.string,
-    }
-)
 
-
-async def async_setup_entry(hass, config_entry, async_add_entities):
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
     """Set up Salus binary sensors from a config entry."""
+    gateway: IT600Gateway = hass.data[DOMAIN][config_entry.entry_id]
 
-    gateway = hass.data[DOMAIN][config_entry.entry_id]
-
-    async def async_update_data():
-        """Fetch data from API endpoint.
-
-        This is the place to pre-process the data to lookup tables
-        so entities can quickly look up their data.
-        """
-        async with async_timeout.timeout(10):
+    async def async_update_data() -> dict:
+        async with asyncio.timeout(10):
             await gateway.poll_status()
             return gateway.get_binary_sensor_devices()
 
@@ -45,81 +35,78 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         hass,
         _LOGGER,
         config_entry=config_entry,
-        name="sensor",
+        name="salus_binary_sensor",
         update_method=async_update_data,
         update_interval=timedelta(seconds=30),
     )
 
-    # Fetch initial data so we have data when entities subscribe
     await coordinator.async_refresh()
 
-    async_add_entities(SalusBinarySensor(coordinator, idx, gateway) for idx
-                       in coordinator.data)
-
-
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the binary_sensor platform."""
-    pass
+    async_add_entities(
+        SalusBinarySensor(coordinator, idx, gateway)
+        for idx in coordinator.data
+    )
 
 
 class SalusBinarySensor(BinarySensorEntity):
-    """Representation of a binary sensor."""
+    """Representation of a Salus binary sensor."""
 
-    def __init__(self, coordinator, idx, gateway):
-        """Initialize the sensor."""
+    _attr_has_entity_name = False
+
+    def __init__(
+        self,
+        coordinator: DataUpdateCoordinator,
+        idx: str,
+        gateway: IT600Gateway,
+    ) -> None:
         self._coordinator = coordinator
         self._idx = idx
         self._gateway = gateway
 
-    async def async_update(self):
-        """Update the entity.
-        Only used by the generic entity update service.
-        """
+    async def async_update(self) -> None:
         await self._coordinator.async_request_refresh()
 
-    async def async_added_to_hass(self):
-        """When entity is added to hass."""
+    async def async_added_to_hass(self) -> None:
         self.async_on_remove(
             self._coordinator.async_add_listener(self.async_write_ha_state)
         )
 
     @property
-    def available(self):
-        """Return if entity is available."""
-        return self._coordinator.data.get(self._idx).available
+    def _device(self):
+        return self._coordinator.data.get(self._idx)
 
     @property
-    def device_info(self):
-        """Return the device info."""
-        return {
-            "name": self._coordinator.data.get(self._idx).name,
-            "identifiers": {("salus", self._coordinator.data.get(self._idx).unique_id)},
-            "manufacturer": self._coordinator.data.get(self._idx).manufacturer,
-            "model": self._coordinator.data.get(self._idx).model,
-            "sw_version": self._coordinator.data.get(self._idx).sw_version
-        }
-
-    @property
-    def unique_id(self):
-        """Return the unique id."""
-        return self._coordinator.data.get(self._idx).unique_id
-
-    @property
-    def should_poll(self):
-        """No need to poll. Coordinator notifies entity of updates."""
+    def should_poll(self) -> bool:
         return False
 
     @property
-    def name(self):
-        """Return the name of the sensor."""
-        return self._coordinator.data.get(self._idx).name
+    def available(self) -> bool:
+        return self._device.available
 
     @property
-    def is_on(self):
-        """Return the state of the sensor."""
-        return self._coordinator.data.get(self._idx).is_on
+    def unique_id(self) -> str:
+        return self._device.unique_id
 
     @property
-    def device_class(self):
-        """Return the device class of the sensor."""
-        return self._coordinator.data.get(self._idx).device_class
+    def name(self) -> str:
+        return self._device.name
+
+    @property
+    def is_on(self) -> bool:
+        return self._device.is_on
+
+    @property
+    def device_class(self) -> str | None:
+        return self._device.device_class
+
+    @property
+    def device_info(self) -> dict:
+        d = self._device
+        return {
+            "name": d.name,
+            "identifiers": {(DOMAIN, d.unique_id)},
+            "manufacturer": d.manufacturer,
+            "model": d.model,
+            "sw_version": d.sw_version,
+        }
+
