@@ -1,0 +1,61 @@
+"""Tests for the Salus sensor entity."""
+
+from __future__ import annotations
+
+from unittest.mock import AsyncMock, MagicMock
+
+from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.const import UnitOfTemperature
+
+from custom_components.salus.models import SensorDevice
+from custom_components.salus.sensor import SalusSensor
+
+
+def _make_entity(device: SensorDevice) -> SalusSensor:
+    coordinator = MagicMock()
+    coordinator.data = {device.unique_id: device}
+    coordinator.async_request_refresh = AsyncMock()
+    coordinator.async_add_listener = MagicMock(return_value=lambda: None)
+    return SalusSensor(coordinator, device.unique_id, AsyncMock())
+
+
+class TestSalusSensorProperties:
+    """Test sensor entity property delegation."""
+
+    def test_unique_id(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.unique_id == "sensor_001_temp"
+
+    def test_name(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.name == "Office Temperature"
+
+    def test_available(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.available is True
+
+    def test_native_value(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.native_value == 23.4
+
+    def test_should_poll_false(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.should_poll is False
+
+    def test_device_class(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.device_class == SensorDeviceClass.TEMPERATURE
+
+    def test_state_class(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.state_class == SensorStateClass.MEASUREMENT
+
+    def test_unit_of_measurement(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        assert entity.native_unit_of_measurement == UnitOfTemperature.CELSIUS
+
+    def test_device_info(self, sensor_device):
+        entity = _make_entity(sensor_device)
+        info = entity.device_info
+        assert info["manufacturer"] == "SALUS"
+        assert ("salus", "sensor_001_temp") in info["identifiers"]

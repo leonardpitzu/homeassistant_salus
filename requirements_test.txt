@@ -1,0 +1,5 @@
+pytest>=8.0
+pytest-asyncio>=0.25
+pytest-cov>=6.0
+pytest-homeassistant-custom-component>=0.13.200
+cryptography>=42.0.0
