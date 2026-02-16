@@ -7,9 +7,12 @@ import logging
 from homeassistant import config_entries, core
 from homeassistant.const import CONF_HOST, CONF_TOKEN
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.config_validation import config_entry_only_config_schema
 
 from .config_flow import CONF_FLOW_TYPE, CONF_USER
 from .const import DOMAIN
+
+CONFIG_SCHEMA = config_entry_only_config_schema(DOMAIN)
 from .exceptions import IT600AuthenticationError, IT600ConnectionError
 from .gateway import IT600Gateway
 
