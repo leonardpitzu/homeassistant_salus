@@ -16,6 +16,7 @@ from custom_components.salus.exceptions import (
 )
 
 GATEWAY_PATCH = "custom_components.salus.config_flow.IT600Gateway"
+SETUP_ENTRY_PATCH = "custom_components.salus.async_setup_entry"
 
 
 async def test_show_form(hass: HomeAssistant) -> None:
@@ -34,7 +35,10 @@ async def test_user_flow_success(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    with patch(GATEWAY_PATCH) as mock_gw_cls:
+    with (
+        patch(GATEWAY_PATCH) as mock_gw_cls,
+        patch(SETUP_ENTRY_PATCH, return_value=True),
+    ):
         mock_gw = AsyncMock()
         mock_gw.connect = AsyncMock(return_value="AA:BB:CC:DD:EE:FF")
         mock_gw.close = AsyncMock()
@@ -153,7 +157,10 @@ async def test_gateway_close_called_on_success(hass: HomeAssistant) -> None:
         DOMAIN, context={"source": config_entries.SOURCE_USER}
     )
 
-    with patch(GATEWAY_PATCH) as mock_gw_cls:
+    with (
+        patch(GATEWAY_PATCH) as mock_gw_cls,
+        patch(SETUP_ENTRY_PATCH, return_value=True),
+    ):
         mock_gw = AsyncMock()
         mock_gw.connect = AsyncMock(return_value="11:22:33:44:55:66")
         mock_gw.close = AsyncMock()
