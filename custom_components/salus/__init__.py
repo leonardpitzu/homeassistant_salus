@@ -11,12 +11,12 @@ from homeassistant.helpers.config_validation import config_entry_only_config_sch
 
 from .config_flow import CONF_FLOW_TYPE, CONF_USER
 from .const import DOMAIN
-
-CONFIG_SCHEMA = config_entry_only_config_schema(DOMAIN)
 from .exceptions import IT600AuthenticationError, IT600ConnectionError
 from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
+
+CONFIG_SCHEMA = config_entry_only_config_schema(DOMAIN)
 
 GATEWAY_PLATFORMS = ["climate", "binary_sensor", "switch", "cover", "sensor"]
 

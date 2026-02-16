@@ -1,14 +1,14 @@
 {
   "domain": "salus",
   "name": "Salus iT600",
-  "config_flow": true,
-  "documentation": "https://github.com/leonardpitzu/homeassistant_salus",
-  "issue_tracker": "https://github.com/leonardpitzu/homeassistant_salus/issues",
-  "iot_class": "local_polling",
-  "requirements": ["cryptography>=42.0.0"],
-  "dependencies": [],
   "codeowners": [
     "@leonardpitzu"
   ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/leonardpitzu/homeassistant_salus",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/leonardpitzu/homeassistant_salus/issues",
+  "requirements": ["cryptography>=42.0.0"],
   "version": "1.0.0"
 }
