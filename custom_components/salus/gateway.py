@@ -740,6 +740,7 @@ class IT600Gateway:
                                 manufacturer=device.manufacturer,
                                 model=device.model,
                                 sw_version=device.sw_version,
+                                parent_unique_id=unique_id,
                             )
                             battery_local[battery_uid] = battery_sensor
                     except (ValueError, IndexError):

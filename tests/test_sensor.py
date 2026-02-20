@@ -76,6 +76,7 @@ class TestSalusBatterySensorProperties:
             manufacturer="SALUS",
             model="iT600",
             sw_version="1.0.0",
+            parent_unique_id="climate_001",
         )
 
     def test_device_class_battery(self):
@@ -93,3 +94,10 @@ class TestSalusBatterySensorProperties:
     def test_name(self):
         entity = _make_entity(self._battery_device())
         assert entity.name == "Living Room Battery"
+
+    def test_device_info_uses_parent_id(self):
+        entity = _make_entity(self._battery_device())
+        info = entity.device_info
+        # Battery sensor should be grouped under the thermostat device
+        assert ("salus", "climate_001") in info["identifiers"]
+        assert ("salus", "climate_001_battery") not in info["identifiers"]

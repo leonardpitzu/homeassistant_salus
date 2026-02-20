@@ -115,9 +115,10 @@ class SalusSensor(SensorEntity):
     @property
     def device_info(self) -> dict:
         d = self._device
+        device_id = d.parent_unique_id if d.parent_unique_id else d.unique_id
         return {
             "name": d.name,
-            "identifiers": {(DOMAIN, d.unique_id)},
+            "identifiers": {(DOMAIN, device_id)},
             "manufacturer": d.manufacturer,
             "model": d.model,
             "sw_version": d.sw_version,

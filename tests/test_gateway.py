@@ -424,6 +424,7 @@ class TestRefreshClimateDevices:
         assert bat.device_class == "battery"
         assert bat.unit_of_measurement == "%"
         assert bat.name == "Battery TH Battery"
+        assert bat.parent_unique_id == "thermo_bat"
 
     async def test_battery_not_created_when_status_d_too_short(self):
         gw = _make_gateway()
