@@ -94,6 +94,7 @@ class IT600Gateway:
         self._cover_update_callbacks: list[Callable[..., Awaitable[None]]] = []
 
         self._sensor_devices: dict[str, SensorDevice] = {}
+        self._battery_sensor_devices: dict[str, SensorDevice] = {}
         self._sensor_update_callbacks: list[Callable[..., Awaitable[None]]] = []
 
     # ------------------------------------------------------------------
@@ -524,9 +525,11 @@ class IT600Gateway:
         self, devices: list[Any], send_callback: bool = False
     ) -> None:
         local: dict[str, ClimateDevice] = {}
+        battery_local: dict[str, SensorDevice] = {}
 
         if not devices:
             self._climate_devices = local
+            self._battery_sensor_devices = battery_local
             return
 
         status = await self._make_encrypted_request(
@@ -719,6 +722,29 @@ class IT600Gateway:
 
                 local[device.unique_id] = device
 
+                # Extract battery level from Status_d character 99 (0-5)
+                status_d = (th or {}).get("Status_d", "")
+                if len(status_d) > 99:
+                    try:
+                        raw_battery = int(status_d[99])
+                        if 0 <= raw_battery <= 5:
+                            battery_uid = f"{unique_id}_battery"
+                            battery_sensor = SensorDevice(
+                                available=device.available,
+                                name=f"{device.name} Battery",
+                                unique_id=battery_uid,
+                                state=raw_battery * 20,
+                                unit_of_measurement="%",
+                                device_class="battery",
+                                data=ds["data"],
+                                manufacturer=device.manufacturer,
+                                model=device.model,
+                                sw_version=device.sw_version,
+                            )
+                            battery_local[battery_uid] = battery_sensor
+                    except (ValueError, IndexError):
+                        pass
+
                 if send_callback:
                     self._climate_devices[device.unique_id] = device
                     await self._send_climate_update_callback(device.unique_id)
@@ -726,6 +752,7 @@ class IT600Gateway:
                 _LOGGER.exception("Failed to poll climate %s", unique_id)
 
         self._climate_devices = local
+        self._battery_sensor_devices = battery_local
         _LOGGER.debug("Refreshed %s climate devices", len(local))
 
     # ------------------------------------------------------------------
@@ -811,7 +838,7 @@ class IT600Gateway:
         return self._cover_devices.get(device_id)
 
     def get_sensor_devices(self) -> dict[str, SensorDevice]:
-        return self._sensor_devices
+        return {**self._sensor_devices, **self._battery_sensor_devices}
 
     def get_sensor_device(self, device_id: str) -> SensorDevice | None:
         return self._sensor_devices.get(device_id)

@@ -53,12 +53,10 @@ async def async_setup_entry(
 
 
 class SalusSensor(SensorEntity):
-    """Representation of a Salus temperature sensor."""
+    """Representation of a Salus sensor (temperature, battery, etc.)."""
 
     _attr_has_entity_name = False
-    _attr_device_class = SensorDeviceClass.TEMPERATURE
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
 
     def __init__(
         self,
@@ -97,6 +95,19 @@ class SalusSensor(SensorEntity):
     @property
     def name(self) -> str:
         return self._device.name
+
+    @property
+    def device_class(self) -> str | None:
+        dc = self._device.device_class
+        if dc == "temperature":
+            return SensorDeviceClass.TEMPERATURE
+        if dc == "battery":
+            return SensorDeviceClass.BATTERY
+        return dc
+
+    @property
+    def native_unit_of_measurement(self) -> str | None:
+        return self._device.unit_of_measurement
 
     @property
     def native_value(self) -> float | None:
