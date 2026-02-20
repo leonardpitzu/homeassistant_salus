@@ -101,3 +101,6 @@ class TestSalusBatterySensorProperties:
         # Battery sensor should be grouped under the thermostat device
         assert ("salus", "climate_001") in info["identifiers"]
         assert ("salus", "climate_001_battery") not in info["identifiers"]
+        # Should not override parent device name or other attributes
+        assert "name" not in info
+        assert "manufacturer" not in info

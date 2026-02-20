@@ -115,10 +115,15 @@ class SalusSensor(SensorEntity):
     @property
     def device_info(self) -> dict:
         d = self._device
-        device_id = d.parent_unique_id if d.parent_unique_id else d.unique_id
+        if d.parent_unique_id:
+            # Child sensor (e.g. battery) — attach to the parent device
+            # without overriding its name or other attributes.
+            return {
+                "identifiers": {(DOMAIN, d.parent_unique_id)},
+            }
         return {
             "name": d.name,
-            "identifiers": {(DOMAIN, device_id)},
+            "identifiers": {(DOMAIN, d.unique_id)},
             "manufacturer": d.manufacturer,
             "model": d.model,
             "sw_version": d.sw_version,
