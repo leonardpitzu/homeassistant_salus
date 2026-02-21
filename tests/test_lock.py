@@ -11,7 +11,6 @@ from custom_components.salus.const import DOMAIN
 from custom_components.salus.lock import SalusThermostatLock
 from custom_components.salus.models import ClimateDevice
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
