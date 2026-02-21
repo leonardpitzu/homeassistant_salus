@@ -462,6 +462,7 @@ class IT600Gateway:
                             model=device.model,
                             sw_version=device.sw_version,
                             parent_unique_id=unique_id,
+                            entity_category="diagnostic",
                         )
                         local[bat_uid] = bat
             except Exception:
@@ -556,6 +557,7 @@ class IT600Gateway:
                         model=device.model,
                         sw_version=device.sw_version,
                         parent_unique_id=unique_id,
+                        entity_category="diagnostic",
                     )
                 elif low_batt_power is not None:
                     lb_uid = f"{unique_id}_low_battery"
@@ -570,6 +572,7 @@ class IT600Gateway:
                         model=device.model,
                         sw_version=device.sw_version,
                         parent_unique_id=unique_id,
+                        entity_category="diagnostic",
                     )
 
                 if send_callback:
@@ -818,35 +821,64 @@ class IT600Gateway:
                                 model=device.model,
                                 sw_version=device.sw_version,
                                 parent_unique_id=unique_id,
+                                entity_category="diagnostic",
                             )
                             battery_local[battery_uid] = battery_sensor
                     except (ValueError, IndexError):
                         pass
 
                 # Parse thermostat error flags (Error01 … Error32)
+                # and aggregate into one "problem" sensor + one "low battery"
+                # sensor per thermostat, with active errors as attributes.
                 if th is not None:
+                    active_problems: list[str] = []
+                    active_battery: list[str] = []
                     for error_key, description in THERMOSTAT_ERROR_CODES.items():
                         value = th.get(error_key)
-                        if value is None:
-                            continue
-                        error_uid = f"{unique_id}_{error_key.lower()}"
-                        error_sensor = BinarySensorDevice(
-                            available=device.available,
-                            name=f"{device.name} {description}",
-                            unique_id=error_uid,
-                            is_on=value == 1,
-                            device_class=(
-                                "battery"
-                                if error_key in BATTERY_ERROR_CODES
-                                else "problem"
-                            ),
-                            data=ds["data"],
-                            manufacturer=device.manufacturer,
-                            model=device.model,
-                            sw_version=device.sw_version,
-                            parent_unique_id=unique_id,
-                        )
-                        error_local[error_uid] = error_sensor
+                        if value == 1:
+                            if error_key in BATTERY_ERROR_CODES:
+                                active_battery.append(description)
+                            else:
+                                active_problems.append(description)
+
+                    # Always create the aggregated problem sensor so
+                    # it is visible (off = no problems).
+                    problem_uid = f"{unique_id}_problem"
+                    error_local[problem_uid] = BinarySensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Problem",
+                        unique_id=problem_uid,
+                        is_on=len(active_problems) > 0,
+                        device_class="problem",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                        entity_category="diagnostic",
+                        extra_state_attributes={
+                            "errors": active_problems,
+                        },
+                    )
+
+                    # Aggregated battery-error sensor
+                    battery_err_uid = f"{unique_id}_battery_error"
+                    error_local[battery_err_uid] = BinarySensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Battery problem",
+                        unique_id=battery_err_uid,
+                        is_on=len(active_battery) > 0,
+                        device_class="battery",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                        entity_category="diagnostic",
+                        extra_state_attributes={
+                            "errors": active_battery,
+                        },
+                    )
 
                 if send_callback:
                     self._climate_devices[device.unique_id] = device

@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+from homeassistant.const import EntityCategory
 
 from custom_components.salus.models import SensorDevice
 from custom_components.salus.sensor import SalusSensor
@@ -77,6 +78,7 @@ class TestSalusBatterySensorProperties:
             model="iT600",
             sw_version="1.0.0",
             parent_unique_id="climate_001",
+            entity_category="diagnostic",
         )
 
     def test_device_class_battery(self):
@@ -104,3 +106,7 @@ class TestSalusBatterySensorProperties:
         # Should not override parent device name or other attributes
         assert "name" not in info
         assert "manufacturer" not in info
+
+    def test_entity_category_diagnostic(self):
+        entity = _make_entity(self._battery_device())
+        assert entity.entity_category == EntityCategory.DIAGNOSTIC

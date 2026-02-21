@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+from homeassistant.const import EntityCategory
+
 from custom_components.salus.binary_sensor import SalusBinarySensor
 from custom_components.salus.models import BinarySensorDevice
 
@@ -73,15 +75,19 @@ class TestSalusBinarySensorParentDevice:
     def _error_device() -> BinarySensorDevice:
         return BinarySensorDevice(
             available=True,
-            name="Living Room Low battery",
-            unique_id="climate_001_error32",
+            name="Living Room Problem",
+            unique_id="climate_001_problem",
             is_on=True,
-            device_class="battery",
+            device_class="problem",
             data={"UniID": "climate_001", "Endpoint": 1},
             manufacturer="SALUS",
             model="iT600",
             sw_version="1.0",
             parent_unique_id="climate_001",
+            entity_category="diagnostic",
+            extra_state_attributes={
+                "errors": ["Paired TRV hardware issue"],
+            },
         )
 
     def test_device_info_uses_parent_id(self):
@@ -92,8 +98,17 @@ class TestSalusBinarySensorParentDevice:
 
     def test_device_class(self):
         entity = _make_entity(self._error_device())
-        assert entity.device_class == "battery"
+        assert entity.device_class == "problem"
 
     def test_is_on(self):
         entity = _make_entity(self._error_device())
         assert entity.is_on is True
+
+    def test_entity_category_diagnostic(self):
+        entity = _make_entity(self._error_device())
+        assert entity.entity_category == EntityCategory.DIAGNOSTIC
+
+    def test_extra_state_attributes(self):
+        entity = _make_entity(self._error_device())
+        attrs = entity.extra_state_attributes
+        assert attrs == {"errors": ["Paired TRV hardware issue"]}

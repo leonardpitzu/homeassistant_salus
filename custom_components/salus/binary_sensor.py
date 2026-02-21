@@ -8,6 +8,7 @@ from datetime import timedelta
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -98,6 +99,17 @@ class SalusBinarySensor(BinarySensorEntity):
     @property
     def device_class(self) -> str | None:
         return self._device.device_class
+
+    @property
+    def entity_category(self) -> EntityCategory | None:
+        ec = self._device.entity_category
+        if ec == "diagnostic":
+            return EntityCategory.DIAGNOSTIC
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict | None:
+        return self._device.extra_state_attributes
 
     @property
     def device_info(self) -> dict:

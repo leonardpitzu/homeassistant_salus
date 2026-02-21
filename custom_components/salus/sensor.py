@@ -12,6 +12,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
@@ -103,6 +104,13 @@ class SalusSensor(SensorEntity):
         if dc == "battery":
             return SensorDeviceClass.BATTERY
         return dc
+
+    @property
+    def entity_category(self) -> EntityCategory | None:
+        ec = self._device.entity_category
+        if ec == "diagnostic":
+            return EntityCategory.DIAGNOSTIC
+        return None
 
     @property
     def native_unit_of_measurement(self) -> str | None:

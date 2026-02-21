@@ -62,6 +62,8 @@ class BinarySensorDevice:
     model: str | None
     sw_version: str | None
     parent_unique_id: str | None = None
+    entity_category: str | None = None
+    extra_state_attributes: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,3 +115,4 @@ class SensorDevice:
     model: str | None
     sw_version: str | None
     parent_unique_id: str | None = None
+    entity_category: str | None = None

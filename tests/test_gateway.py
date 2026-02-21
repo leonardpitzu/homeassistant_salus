@@ -457,6 +457,7 @@ class TestRefreshClimateDevices:
         assert bat.unit_of_measurement == "%"
         assert bat.name == "Battery TH Battery"
         assert bat.parent_unique_id == "thermo_bat"
+        assert bat.entity_category == "diagnostic"
 
     async def test_battery_not_created_when_status_d_too_short(self):
         gw = _make_gateway()
@@ -654,7 +655,7 @@ class TestRefreshClimateDevices:
 
 
 class TestRefreshClimateErrorSensors:
-    """Test sIT600TH Error* fields are parsed into binary sensors."""
+    """Test sIT600TH Error* fields are aggregated into binary sensors."""
 
     @staticmethod
     def _error_response(**errors) -> dict:
@@ -684,10 +685,11 @@ class TestRefreshClimateErrorSensors:
             ],
         }
 
-    async def test_error32_creates_battery_binary_sensor(self):
+    async def test_no_errors_problem_sensor_off(self):
+        """When no errors are active, the problem sensor is off."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error32=1)
+        resp = self._error_response(Error01=0, Error07=0)
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -697,17 +699,17 @@ class TestRefreshClimateErrorSensors:
             await gw._refresh_climate_devices(devices)
 
         bs = gw.get_binary_sensor_devices()
-        assert "err_th_error32" in bs
-        dev = bs["err_th_error32"]
-        assert dev.is_on is True
-        assert dev.device_class == "battery"
-        assert dev.parent_unique_id == "err_th"
-        assert "Low battery" in dev.name
+        problem = bs["err_th_problem"]
+        assert problem.is_on is False
+        assert problem.device_class == "problem"
+        assert problem.entity_category == "diagnostic"
+        assert problem.extra_state_attributes == {"errors": []}
 
-    async def test_error22_creates_battery_binary_sensor(self):
+    async def test_active_errors_problem_sensor_on(self):
+        """Active non-battery errors turn on the problem sensor."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error22=1)
+        resp = self._error_response(Error01=1, Error07=0, Error05=1)
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -717,12 +719,39 @@ class TestRefreshClimateErrorSensors:
             await gw._refresh_climate_devices(devices)
 
         bs = gw.get_binary_sensor_devices()
-        assert "err_th_error22" in bs
-        dev = bs["err_th_error22"]
-        assert dev.is_on is True
-        assert dev.device_class == "battery"
+        problem = bs["err_th_problem"]
+        assert problem.is_on is True
+        assert problem.device_class == "problem"
+        attrs = problem.extra_state_attributes["errors"]
+        assert "Paired TRV hardware issue" in attrs
+        assert "Lost link with ZigBee Coordinator" in attrs
+        assert len(attrs) == 2
 
-    async def test_error01_creates_problem_binary_sensor(self):
+    async def test_battery_errors_aggregated(self):
+        """Battery-related errors (Error22, Error32) go to battery sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error22=1, Error32=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        bat = bs["err_th_battery_error"]
+        assert bat.is_on is True
+        assert bat.device_class == "battery"
+        attrs = bat.extra_state_attributes["errors"]
+        assert "Paired TRV low battery" in attrs
+        assert "Low battery" in attrs
+        # Problem sensor should not contain battery errors
+        assert bs["err_th_problem"].is_on is False
+
+    async def test_no_battery_errors_battery_sensor_off(self):
+        """When only non-battery errors are active, battery sensor is off."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
         resp = self._error_response(Error01=1)
@@ -735,15 +764,15 @@ class TestRefreshClimateErrorSensors:
             await gw._refresh_climate_devices(devices)
 
         bs = gw.get_binary_sensor_devices()
-        assert "err_th_error01" in bs
-        dev = bs["err_th_error01"]
-        assert dev.is_on is True
-        assert dev.device_class == "problem"
+        bat = bs["err_th_battery_error"]
+        assert bat.is_on is False
+        assert bat.extra_state_attributes == {"errors": []}
 
-    async def test_error_value_zero_means_not_active(self):
+    async def test_mixed_errors(self):
+        """Both problem and battery errors at the same time."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error05=0)
+        resp = self._error_response(Error01=1, Error32=1, Error07=0)
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -753,14 +782,14 @@ class TestRefreshClimateErrorSensors:
             await gw._refresh_climate_devices(devices)
 
         bs = gw.get_binary_sensor_devices()
-        assert "err_th_error05" in bs
-        assert bs["err_th_error05"].is_on is False
+        assert bs["err_th_problem"].is_on is True
+        assert bs["err_th_battery_error"].is_on is True
 
-    async def test_unknown_error_keys_are_ignored(self):
-        """Keys not in THERMOSTAT_ERROR_CODES are silently skipped."""
+    async def test_parent_unique_id_set(self):
+        """Aggregated sensors link back to the thermostat device."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error99=1)
+        resp = self._error_response()
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -770,24 +799,8 @@ class TestRefreshClimateErrorSensors:
             await gw._refresh_climate_devices(devices)
 
         bs = gw.get_binary_sensor_devices()
-        assert "err_th_error99" not in bs
-
-    async def test_multiple_errors_parsed(self):
-        gw = _make_gateway()
-        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error01=1, Error07=0, Error32=1)
-        with patch.object(
-            gw,
-            "_make_encrypted_request",
-            new_callable=AsyncMock,
-            return_value=resp,
-        ):
-            await gw._refresh_climate_devices(devices)
-
-        bs = gw.get_binary_sensor_devices()
-        assert bs["err_th_error01"].is_on is True
-        assert bs["err_th_error07"].is_on is False
-        assert bs["err_th_error32"].is_on is True
+        assert bs["err_th_problem"].parent_unique_id == "err_th"
+        assert bs["err_th_battery_error"].parent_unique_id == "err_th"
 
 
 class TestRefreshSensorDevices:
@@ -867,6 +880,7 @@ class TestRefreshSensorDevices:
         assert bat.device_class == "battery"
         assert bat.state == 100  # 2.9V → 100% on door curve
         assert bat.parent_unique_id == "sens_v"
+        assert bat.entity_category == "diagnostic"
 
 
 # ---------------------------------------------------------------------------
@@ -1006,6 +1020,7 @@ class TestRefreshBinarySensorDevices:
         assert dev.is_on is True
         assert dev.device_class == "battery"
         assert dev.parent_unique_id == "bs_lb"
+        assert dev.entity_category == "diagnostic"
 
     async def test_low_battery_powers_creates_binary_sensor(self):
         """ErrorPowerSLowBattery creates a battery binary sensor."""
