@@ -2,18 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from datetime import timedelta
 
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .const import DOMAIN
+from .entity import SalusEntity
 from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
@@ -25,72 +24,35 @@ async def async_setup_entry(
     async_add_entities: AddEntitiesCallback,
 ) -> None:
     """Set up Salus binary sensors from a config entry."""
-    gateway: IT600Gateway = hass.data[DOMAIN][config_entry.entry_id]
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    gateway: IT600Gateway = data["gateway"]
+    coordinator: DataUpdateCoordinator = data["coordinator"]
 
-    async def async_update_data() -> dict:
-        async with asyncio.timeout(10):
-            await gateway.poll_status()
-            return gateway.get_binary_sensor_devices()
+    tracked: set[str] = set()
 
-    coordinator = DataUpdateCoordinator(
-        hass,
-        _LOGGER,
-        config_entry=config_entry,
-        name="salus_binary_sensor",
-        update_method=async_update_data,
-        update_interval=timedelta(seconds=30),
+    @callback
+    def _async_add_new() -> None:
+        devices = gateway.get_binary_sensor_devices()
+        new_ids = set(devices) - tracked
+        if new_ids:
+            tracked.update(new_ids)
+            async_add_entities(
+                SalusBinarySensor(coordinator, idx, gateway)
+                for idx in new_ids
+            )
+
+    _async_add_new()
+    config_entry.async_on_unload(
+        coordinator.async_add_listener(_async_add_new)
     )
 
-    await coordinator.async_refresh()
 
-    async_add_entities(
-        SalusBinarySensor(coordinator, idx, gateway)
-        for idx in coordinator.data
-    )
-
-
-class SalusBinarySensor(BinarySensorEntity):
+class SalusBinarySensor(SalusEntity, BinarySensorEntity):
     """Representation of a Salus binary sensor."""
-
-    _attr_has_entity_name = False
-
-    def __init__(
-        self,
-        coordinator: DataUpdateCoordinator,
-        idx: str,
-        gateway: IT600Gateway,
-    ) -> None:
-        self._coordinator = coordinator
-        self._idx = idx
-        self._gateway = gateway
-
-    async def async_update(self) -> None:
-        await self._coordinator.async_request_refresh()
-
-    async def async_added_to_hass(self) -> None:
-        self.async_on_remove(
-            self._coordinator.async_add_listener(self.async_write_ha_state)
-        )
 
     @property
     def _device(self):
-        return self._coordinator.data.get(self._idx)
-
-    @property
-    def should_poll(self) -> bool:
-        return False
-
-    @property
-    def available(self) -> bool:
-        return self._device.available
-
-    @property
-    def unique_id(self) -> str:
-        return self._device.unique_id
-
-    @property
-    def name(self) -> str:
-        return self._device.name
+        return self._gateway.get_binary_sensor_device(self._idx)
 
     @property
     def is_on(self) -> bool:
@@ -110,21 +72,4 @@ class SalusBinarySensor(BinarySensorEntity):
     @property
     def extra_state_attributes(self) -> dict | None:
         return self._device.extra_state_attributes
-
-    @property
-    def device_info(self) -> dict:
-        d = self._device
-        if d.parent_unique_id:
-            # Child sensor (e.g. error) — attach to the parent device
-            # without overriding its name or other attributes.
-            return {
-                "identifiers": {(DOMAIN, d.parent_unique_id)},
-            }
-        return {
-            "name": d.name,
-            "identifiers": {(DOMAIN, d.unique_id)},
-            "manufacturer": d.manufacturer,
-            "model": d.model,
-            "sw_version": d.sw_version,
-        }
 

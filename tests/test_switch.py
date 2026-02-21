@@ -12,10 +12,10 @@ def _make_entity(
     device: SwitchDevice,
 ) -> tuple[SalusSwitch, AsyncMock]:
     coordinator = MagicMock()
-    coordinator.data = {device.unique_id: device}
     coordinator.async_request_refresh = AsyncMock()
     coordinator.async_add_listener = MagicMock(return_value=lambda: None)
     gateway = AsyncMock()
+    gateway.get_switch_device = MagicMock(return_value=device)
     entity = SalusSwitch(coordinator, device.unique_id, gateway)
     return entity, gateway
 
@@ -70,9 +70,9 @@ class TestSalusSwitchCommands:
     async def test_turn_on_triggers_refresh(self, switch_device):
         entity, _ = _make_entity(switch_device)
         await entity.async_turn_on()
-        entity._coordinator.async_request_refresh.assert_awaited_once()
+        entity.coordinator.async_request_refresh.assert_awaited_once()
 
     async def test_turn_off_triggers_refresh(self, switch_device):
         entity, _ = _make_entity(switch_device)
         await entity.async_turn_off()
-        entity._coordinator.async_request_refresh.assert_awaited_once()
+        entity.coordinator.async_request_refresh.assert_awaited_once()

@@ -13,10 +13,11 @@ from custom_components.salus.sensor import SalusSensor
 
 def _make_entity(device: SensorDevice) -> SalusSensor:
     coordinator = MagicMock()
-    coordinator.data = {device.unique_id: device}
     coordinator.async_request_refresh = AsyncMock()
     coordinator.async_add_listener = MagicMock(return_value=lambda: None)
-    return SalusSensor(coordinator, device.unique_id, AsyncMock())
+    gateway = AsyncMock()
+    gateway.get_sensor_device = MagicMock(return_value=device)
+    return SalusSensor(coordinator, device.unique_id, gateway)
 
 
 class TestSalusSensorProperties:
@@ -58,7 +59,8 @@ class TestSalusSensorProperties:
         entity = _make_entity(sensor_device)
         info = entity.device_info
         assert info["manufacturer"] == "SALUS"
-        assert ("salus", "sensor_001_temp") in info["identifiers"]
+        # identifiers use UniID from data (the physical device), not unique_id
+        assert ("salus", "sensor_001") in info["identifiers"]
 
 
 class TestSalusBatterySensorProperties:

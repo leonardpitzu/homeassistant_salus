@@ -14,6 +14,7 @@ from .const import (
     BATTERY_ERROR_CODES,
     BATTERY_OEM_MODELS,
     BATTERY_VOLTAGE_THRESHOLDS,
+    COVER_DEVICE_CLASS_MAP,
     CURRENT_HVAC_COOL,
     CURRENT_HVAC_COOL_IDLE,
     CURRENT_HVAC_HEAT,
@@ -21,6 +22,7 @@ from .const import (
     CURRENT_HVAC_IDLE,
     CURRENT_HVAC_OFF,
     DOOR_VOLTAGE_MODELS,
+    ENERGY_METER_VOLTAGE_MODELS,
     FAN_MODE_AUTO,
     FAN_MODE_HIGH,
     FAN_MODE_LOW,
@@ -101,6 +103,7 @@ class IT600Gateway:
 
         self._sensor_devices: dict[str, SensorDevice] = {}
         self._battery_sensor_devices: dict[str, SensorDevice] = {}
+        self._energy_sensor_devices: dict[str, SensorDevice] = {}
         self._sensor_update_callbacks: list[Callable[..., Awaitable[None]]] = []
 
         self._error_binary_sensor_devices: dict[str, BinarySensorDevice] = {}
@@ -277,6 +280,10 @@ class IT600Gateway:
                 if ds.get("sButtonS", {}).get("Mode") == 0:
                     continue  # disabled endpoint
 
+                model_id = ds.get("DeviceL", {}).get(
+                    "ModelIdentifier_i"
+                )
+
                 current_position = ds.get("sLevelS", {}).get("CurrentLevel")
 
                 move_raw = ds.get("sLevelS", {}).get("MoveToLevel_f")
@@ -304,12 +311,12 @@ class IT600Gateway:
                     supported_features=(
                         SUPPORT_OPEN | SUPPORT_CLOSE | SUPPORT_SET_POSITION
                     ),
-                    device_class=None,
+                    device_class=COVER_DEVICE_CLASS_MAP.get(model_id),
                     data=ds["data"],
                     manufacturer=ds.get("sBasicS", {}).get(
                         "ManufactureName", "SALUS"
                     ),
-                    model=ds.get("DeviceL", {}).get("ModelIdentifier_i"),
+                    model=model_id,
                     sw_version=ds.get("sZDO", {}).get("FirmwareVersion"),
                 )
                 local[device.unique_id] = device
@@ -329,9 +336,11 @@ class IT600Gateway:
         self, devices: list[Any], send_callback: bool = False
     ) -> None:
         local: dict[str, SwitchDevice] = {}
+        energy_local: dict[str, SensorDevice] = {}
 
         if not devices:
             self._switch_devices = local
+            self._energy_sensor_devices = energy_local
             return
 
         status = await self._make_encrypted_request(
@@ -380,6 +389,43 @@ class IT600Gateway:
                 )
                 local[device.unique_id] = device
 
+                # sMeteringS → power & energy sensors for smart plugs
+                metering = ds.get("sMeteringS", {})
+                power_raw = metering.get("InstantaneousDemand")
+                if power_raw is not None:
+                    pwr_uid = f"{unique_id}_power"
+                    energy_local[pwr_uid] = SensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Power",
+                        unique_id=pwr_uid,
+                        state=power_raw,
+                        unit_of_measurement="W",
+                        device_class="power",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                        entity_category=None,
+                    )
+                energy_raw = metering.get("CurrentSummationDelivered")
+                if energy_raw is not None:
+                    nrg_uid = f"{unique_id}_energy"
+                    energy_local[nrg_uid] = SensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Energy",
+                        unique_id=nrg_uid,
+                        state=energy_raw / 1000,
+                        unit_of_measurement="kWh",
+                        device_class="energy",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                        entity_category=None,
+                    )
+
                 if send_callback:
                     self._switch_devices[device.unique_id] = device
                     await self._send_switch_update_callback(device.unique_id)
@@ -387,6 +433,7 @@ class IT600Gateway:
                 _LOGGER.exception("Failed to poll switch %s", unique_id)
 
         self._switch_devices = local
+        self._energy_sensor_devices = energy_local
         _LOGGER.debug("Refreshed %s switch devices", len(local))
 
     # ---- sensors ----
@@ -465,6 +512,29 @@ class IT600Gateway:
                             entity_category="diagnostic",
                         )
                         local[bat_uid] = bat
+
+                # sRelativeHumidity → humidity sensor
+                rh_raw = ds.get("sRelativeHumidity", {}).get(
+                    "MeasuredValue_x100"
+                )
+                if rh_raw is not None:
+                    hum_uid = f"{unique_id}_humidity"
+                    dev_name = self._device_name(ds, "Unknown")
+                    local[hum_uid] = SensorDevice(
+                        available=device.available,
+                        name=f"{dev_name} Humidity",
+                        unique_id=hum_uid,
+                        state=rh_raw / 100,
+                        unit_of_measurement="%",
+                        device_class="humidity",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                        entity_category=None,
+                    )
+
             except Exception:
                 _LOGGER.exception("Failed to poll sensor %s", unique_id)
 
@@ -645,8 +715,11 @@ class IT600Gateway:
 
                 if th is not None:
                     humidity: float | None = None
-                    if model and "SQ610" in model:
-                        humidity = th.get("SunnySetpoint_x100")
+                    rh_val = ds.get("sRelativeHumidity", {}).get(
+                        "MeasuredValue_x100"
+                    )
+                    if rh_val is not None:
+                        humidity = rh_val / 100
 
                     hold = th["HoldType"]
                     running = th["RunningState"]
@@ -959,7 +1032,8 @@ class IT600Gateway:
     def get_binary_sensor_device(
         self, device_id: str
     ) -> BinarySensorDevice | None:
-        return self._binary_sensor_devices.get(device_id)
+        return (self._binary_sensor_devices.get(device_id)
+                or self._error_binary_sensor_devices.get(device_id))
 
     def get_switch_devices(self) -> dict[str, SwitchDevice]:
         return self._switch_devices
@@ -974,10 +1048,16 @@ class IT600Gateway:
         return self._cover_devices.get(device_id)
 
     def get_sensor_devices(self) -> dict[str, SensorDevice]:
-        return {**self._sensor_devices, **self._battery_sensor_devices}
+        return {
+            **self._sensor_devices,
+            **self._battery_sensor_devices,
+            **self._energy_sensor_devices,
+        }
 
     def get_sensor_device(self, device_id: str) -> SensorDevice | None:
-        return self._sensor_devices.get(device_id)
+        return (self._sensor_devices.get(device_id)
+                or self._battery_sensor_devices.get(device_id)
+                or self._energy_sensor_devices.get(device_id))
 
     # ------------------------------------------------------------------
     #  Commands — covers
@@ -1229,6 +1309,8 @@ class IT600Gateway:
             curve = "window"
         elif model in DOOR_VOLTAGE_MODELS:
             curve = "door"
+        elif model in ENERGY_METER_VOLTAGE_MODELS:
+            curve = "energy_meter"
         else:
             # Use door curve as a safe default for any battery device
             curve = "door"

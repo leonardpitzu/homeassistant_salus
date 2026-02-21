@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+from datetime import timedelta
 
 from homeassistant import config_entries, core
 from homeassistant.const import CONF_HOST, CONF_TOKEN
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.config_validation import config_entry_only_config_schema
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .config_flow import CONF_FLOW_TYPE, CONF_USER
 from .const import DOMAIN
@@ -18,7 +21,14 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIG_SCHEMA = config_entry_only_config_schema(DOMAIN)
 
-GATEWAY_PLATFORMS = ["climate", "binary_sensor", "switch", "cover", "sensor"]
+GATEWAY_PLATFORMS = [
+    "climate",
+    "binary_sensor",
+    "switch",
+    "cover",
+    "sensor",
+    "lock",
+]
 
 
 async def async_setup(hass: core.HomeAssistant, config: dict) -> bool:
@@ -57,7 +67,6 @@ async def async_setup_gateway_entry(
             except Exception:
                 if remaining == 0:
                     raise
-                import asyncio
                 await asyncio.sleep(3)
     except IT600ConnectionError:
         _LOGGER.error(
@@ -72,7 +81,30 @@ async def async_setup_gateway_entry(
         )
         return False
 
-    hass.data[DOMAIN][entry.entry_id] = gateway
+    # ── Shared coordinator ──────────────────────────────────────────
+    async def _async_update_data() -> bool:
+        async with asyncio.timeout(30):
+            await gateway.poll_status()
+        return True
+
+    coordinator = DataUpdateCoordinator(
+        hass,
+        _LOGGER,
+        config_entry=entry,
+        name="salus",
+        update_method=_async_update_data,
+        update_interval=timedelta(seconds=30),
+    )
+
+    # The initial poll already happened above; seed the coordinator so
+    # that ``coordinator.last_update_success`` is True and entities see
+    # themselves as available immediately.
+    coordinator.async_set_updated_data(True)
+
+    hass.data[DOMAIN][entry.entry_id] = {
+        "gateway": gateway,
+        "coordinator": coordinator,
+    }
 
     gateway_info = gateway.get_gateway_device()
     if gateway_info is not None:
@@ -106,11 +138,14 @@ async def async_unload_entry(
     )
 
     if unload_ok:
-        gateway: IT600Gateway | None = hass.data[DOMAIN].pop(
-            config_entry.entry_id, None
-        )
-        if gateway is not None:
-            await gateway.close()
+        data = hass.data[DOMAIN].pop(config_entry.entry_id, None)
+        if data is not None:
+            gateway = (
+                data if isinstance(data, IT600Gateway)
+                else data.get("gateway")
+            )
+            if gateway is not None:
+                await gateway.close()
 
     return unload_ok
 

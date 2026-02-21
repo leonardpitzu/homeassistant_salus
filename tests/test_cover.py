@@ -19,10 +19,10 @@ def _make_entity(
     device: CoverDevice,
 ) -> tuple[SalusCover, AsyncMock]:
     coordinator = MagicMock()
-    coordinator.data = {device.unique_id: device}
     coordinator.async_request_refresh = AsyncMock()
     coordinator.async_add_listener = MagicMock(return_value=lambda: None)
     gateway = AsyncMock()
+    gateway.get_cover_device = MagicMock(return_value=device)
     entity = SalusCover(coordinator, device.unique_id, gateway)
     return entity, gateway
 
@@ -123,4 +123,4 @@ class TestSalusCoverCommands:
     async def test_commands_trigger_refresh(self, cover_device):
         entity, _ = _make_entity(cover_device)
         await entity.async_open_cover()
-        entity._coordinator.async_request_refresh.assert_awaited_once()
+        entity.coordinator.async_request_refresh.assert_awaited_once()

@@ -69,6 +69,10 @@ async def test_setup_entry_success(hass: HomeAssistant) -> None:
 
     assert result is True
     assert entry.entry_id in hass.data[DOMAIN]
+    stored = hass.data[DOMAIN][entry.entry_id]
+    assert isinstance(stored, dict)
+    assert "gateway" in stored
+    assert "coordinator" in stored
     mock_forward.assert_awaited_once()
 
 
@@ -112,7 +116,10 @@ async def test_unload_entry(hass: HomeAssistant) -> None:
     mock_gw.close = AsyncMock()
 
     hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = mock_gw
+    hass.data[DOMAIN][entry.entry_id] = {
+        "gateway": mock_gw,
+        "coordinator": MagicMock(),
+    }
 
     with patch.object(
         hass.config_entries,

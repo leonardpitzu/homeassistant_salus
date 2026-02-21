@@ -12,10 +12,11 @@ from custom_components.salus.models import BinarySensorDevice
 
 def _make_entity(device: BinarySensorDevice) -> SalusBinarySensor:
     coordinator = MagicMock()
-    coordinator.data = {device.unique_id: device}
     coordinator.async_request_refresh = AsyncMock()
     coordinator.async_add_listener = MagicMock(return_value=lambda: None)
-    return SalusBinarySensor(coordinator, device.unique_id, AsyncMock())
+    gateway = AsyncMock()
+    gateway.get_binary_sensor_device = MagicMock(return_value=device)
+    return SalusBinarySensor(coordinator, device.unique_id, gateway)
 
 
 class TestSalusBinarySensorProperties:

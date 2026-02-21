@@ -103,9 +103,19 @@ BATTERY_VOLTAGE_THRESHOLDS: dict[str, list[tuple[float, int, str]]] = {
 
 # Models that use the "door" voltage curve (CO, smoke, remote temp)
 DOOR_VOLTAGE_MODELS: frozenset[str] = frozenset({
-    "SmokeSensor-EM", "WLS600", "TS600",
+    "SmokeSensor-EM", "WLS600", "TS600", "SD600",
 })
 # Models that use the "window" voltage curve
 WINDOW_VOLTAGE_MODELS: frozenset[str] = frozenset({
     "SW600", "OS600",
 })
+# Models that use the "energy_meter" voltage curve
+ENERGY_METER_VOLTAGE_MODELS: frozenset[str] = frozenset({
+    "RE600", "RE10B",
+})
+
+# ── Cover device class mapping ────────────────────────────────────
+COVER_DEVICE_CLASS_MAP: dict[str, str] = {
+    "SR600": "shutter",
+    "RS600": "shutter",
+}

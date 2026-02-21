@@ -26,11 +26,11 @@ from custom_components.salus.models import ClimateDevice
 def _make_entity(device: ClimateDevice) -> tuple[SalusThermostat, AsyncMock]:
     """Create a SalusThermostat entity with a mocked coordinator + gateway."""
     coordinator = MagicMock()
-    coordinator.data = {device.unique_id: device}
     coordinator.async_request_refresh = AsyncMock()
     coordinator.async_add_listener = MagicMock(return_value=lambda: None)
 
     gateway = AsyncMock()
+    gateway.get_climate_device = MagicMock(return_value=device)
     entity = SalusThermostat(coordinator, device.unique_id, gateway)
     return entity, gateway
 
@@ -198,7 +198,7 @@ class TestSalusThermostatCommands:
 
     async def test_commands_trigger_refresh(self, climate_device):
         entity, gw = _make_entity(climate_device)
-        coordinator = entity._coordinator
+        coordinator = entity.coordinator
 
         await entity.async_set_temperature(temperature=20.0)
         assert coordinator.async_request_refresh.await_count == 1

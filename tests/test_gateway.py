@@ -105,6 +105,15 @@ class TestVoltageToBatteryPct:
             (2.5, "SmokeSensor-EM", 25),
             (2.2, "SmokeSensor-EM", 25),
             (2.1, "SmokeSensor-EM", 0),
+            # Energy-meter-curve models (thresholds 5.2 / 4.6 / 4.2)
+            (5.5, "RE600", 100),
+            (5.2, "RE600", 100),
+            (5.0, "RE600", 50),
+            (4.6, "RE600", 50),
+            (4.4, "RE600", 25),
+            (4.2, "RE600", 25),
+            (4.0, "RE600", 0),
+            (5.5, "RE10B", 100),
             # Unknown model falls back to door curve
             (2.9, "UNKNOWN", 100),
             (2.85, "UNKNOWN", 50),
@@ -316,6 +325,58 @@ class TestRefreshClimateDevices:
         assert dev.hvac_mode == HVAC_MODE_OFF
         assert dev.hvac_action == CURRENT_HVAC_OFF
         assert dev.preset_mode == PRESET_OFF
+
+    async def test_humidity_from_srelativehumidity(self):
+        """Humidity should come from sRelativeHumidity, not SunnySetpoint."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "sq_hum"}, "sIT600TH": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "sq_hum", "Endpoint": 1},
+                    "sIT600TH": {
+                        "LocalTemperature_x100": 2200,
+                        "HeatingSetpoint_x100": 2400,
+                        "MaxHeatSetpoint_x100": 3500,
+                        "MinHeatSetpoint_x100": 500,
+                        "HoldType": 0,
+                        "RunningState": 0,
+                        "SunnySetpoint_x100": 9999,
+                    },
+                    "sRelativeHumidity": {"MeasuredValue_x100": 4520},
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "SQ Humid"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SQ610RF"},
+                }
+            ],
+        }
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock, return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        dev = gw.get_climate_device("sq_hum")
+        assert dev.current_humidity == 45.2
+
+    async def test_humidity_none_when_no_cluster(self):
+        """When sRelativeHumidity is absent, humidity should be None."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "sq_noh"}, "sIT600TH": {}}]
+        resp = self._it600th_response(hold=0, running=0)
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock, return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        dev = gw.get_climate_device("thermo_001")
+        assert dev.current_humidity is None
 
     async def test_fc600_heating(self):
         gw = _make_gateway()
@@ -882,6 +943,87 @@ class TestRefreshSensorDevices:
         assert bat.parent_unique_id == "sens_v"
         assert bat.entity_category == "diagnostic"
 
+    async def test_humidity_sensor_created(self):
+        """sRelativeHumidity.MeasuredValue_x100 creates a humidity sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "sens_h"}, "sTempS": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "sens_h", "Endpoint": 1},
+                    "sTempS": {"MeasuredValue_x100": 2200},
+                    "sRelativeHumidity": {"MeasuredValue_x100": 5530},
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "Multi Sensor"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "TS600"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_sensor_devices(devices)
+
+        devs = gw.get_sensor_devices()
+        assert "sens_h_humidity" in devs
+        hum = devs["sens_h_humidity"]
+        assert hum.device_class == "humidity"
+        assert hum.state == 55.3
+        assert hum.unit_of_measurement == "%"
+        assert hum.parent_unique_id == "sens_h"
+
+    async def test_get_sensor_device_finds_battery(self):
+        """get_sensor_device should search battery sensor dict too."""
+        gw = _make_gateway()
+        from custom_components.salus.models import SensorDevice
+
+        bat = SensorDevice(
+            available=True,
+            name="Battery",
+            unique_id="x_battery",
+            state=80,
+            unit_of_measurement="%",
+            device_class="battery",
+            data={"UniID": "x"},
+            manufacturer="SALUS",
+            model="TS600",
+            sw_version="1.0",
+            parent_unique_id="x",
+            entity_category="diagnostic",
+        )
+        gw._battery_sensor_devices = {"x_battery": bat}
+        assert gw.get_sensor_device("x_battery") is bat
+
+    async def test_get_sensor_device_finds_energy(self):
+        """get_sensor_device should search energy sensor dict too."""
+        gw = _make_gateway()
+        from custom_components.salus.models import SensorDevice
+
+        nrg = SensorDevice(
+            available=True,
+            name="Energy",
+            unique_id="sw_energy",
+            state=1.5,
+            unit_of_measurement="kWh",
+            device_class="energy",
+            data={"UniID": "sw"},
+            manufacturer="SALUS",
+            model="SP600",
+            sw_version="1.0",
+            parent_unique_id="sw_1",
+            entity_category=None,
+        )
+        gw._energy_sensor_devices = {"sw_energy": nrg}
+        assert gw.get_sensor_device("sw_energy") is nrg
+
 
 # ---------------------------------------------------------------------------
 #  Refresh — binary sensors
@@ -1055,6 +1197,27 @@ class TestRefreshBinarySensorDevices:
         assert "bs_plb_low_battery" in bs
         assert bs["bs_plb_low_battery"].is_on is False
 
+    async def test_get_binary_sensor_device_finds_error(self):
+        """get_binary_sensor_device should search error dict too."""
+        gw = _make_gateway()
+        from custom_components.salus.models import BinarySensorDevice
+
+        err = BinarySensorDevice(
+            available=True,
+            name="Problem",
+            unique_id="climate_001_problem",
+            is_on=False,
+            device_class="problem",
+            data={"UniID": "climate_001"},
+            manufacturer="SALUS",
+            model="iT600",
+            sw_version="1.0",
+            parent_unique_id="climate_001",
+            entity_category="diagnostic",
+        )
+        gw._error_binary_sensor_devices = {"climate_001_problem": err}
+        assert gw.get_binary_sensor_device("climate_001_problem") is err
+
 
 # ---------------------------------------------------------------------------
 #  Refresh — switches
@@ -1154,6 +1317,73 @@ class TestRefreshSwitchDevices:
 
         assert gw.get_switch_devices() == {}
 
+    async def test_energy_sensors_from_metering(self):
+        """sMeteringS creates power and energy sensor devices."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "plug_001"}, "sOnOffS": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "plug_001", "Endpoint": 1},
+                    "sOnOffS": {"OnOff": 1},
+                    "sMeteringS": {
+                        "InstantaneousDemand": 125,
+                        "CurrentSummationDelivered": 45600,
+                    },
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "Smart Plug"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SPE600"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_switch_devices(devices)
+
+        sensors = gw.get_sensor_devices()
+        assert "plug_001_1_power" in sensors
+        pwr = sensors["plug_001_1_power"]
+        assert pwr.state == 125
+        assert pwr.device_class == "power"
+        assert pwr.unit_of_measurement == "W"
+        assert pwr.parent_unique_id == "plug_001_1"
+
+        assert "plug_001_1_energy" in sensors
+        nrg = sensors["plug_001_1_energy"]
+        assert nrg.state == 45.6  # Wh / 1000 → kWh
+        assert nrg.device_class == "energy"
+        assert nrg.unit_of_measurement == "kWh"
+
+    async def test_empty_switch_list_clears_energy_sensors(self):
+        gw = _make_gateway()
+        from custom_components.salus.models import SensorDevice
+
+        gw._energy_sensor_devices = {
+            "x": SensorDevice(
+                available=True,
+                name="Power",
+                unique_id="x",
+                state=100,
+                unit_of_measurement="W",
+                device_class="power",
+                data={},
+                manufacturer="SALUS",
+                model="SP600",
+                sw_version="1.0",
+            )
+        }
+        await gw._refresh_switch_devices([])
+        assert gw._energy_sensor_devices == {}
+
 
 # ---------------------------------------------------------------------------
 #  Refresh — covers
@@ -1205,6 +1435,7 @@ class TestRefreshCoverDevices:
         assert dev.supported_features == (
             SUPPORT_OPEN | SUPPORT_CLOSE | SUPPORT_SET_POSITION
         )
+        assert dev.device_class == "shutter"  # RS600 → shutter via map
 
     async def test_closed_cover(self):
         gw = _make_gateway()
