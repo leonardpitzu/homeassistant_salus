@@ -82,6 +82,38 @@ class TestRoundToHalf:
         assert IT600Gateway.round_to_half(value) == expected
 
 
+class TestVoltageToBatteryPct:
+    """Test IT600Gateway._voltage_to_battery_pct static method."""
+
+    @pytest.mark.parametrize(
+        ("voltage", "model", "expected"),
+        [
+            # Window-curve models (thresholds 2.6 / 2.3 / 2.1)
+            (3.0, "SW600", 100),   # well above 2.6 V
+            (2.6, "SW600", 100),   # exactly high
+            (2.5, "SW600", 50),    # between high and medium
+            (2.3, "SW600", 50),    # exactly medium
+            (2.2, "SW600", 25),    # between medium and low
+            (2.1, "SW600", 25),    # exactly low
+            (2.0, "SW600", 0),     # below low
+            (0.0, "SW600", 0),     # zero voltage
+            # Door-curve models (thresholds 2.9 / 2.8 / 2.2)
+            (3.0, "SmokeSensor-EM", 100),
+            (2.9, "SmokeSensor-EM", 100),
+            (2.85, "SmokeSensor-EM", 50),
+            (2.8, "SmokeSensor-EM", 50),
+            (2.5, "SmokeSensor-EM", 25),
+            (2.2, "SmokeSensor-EM", 25),
+            (2.1, "SmokeSensor-EM", 0),
+            # Unknown model falls back to door curve
+            (2.9, "UNKNOWN", 100),
+            (2.85, "UNKNOWN", 50),
+        ],
+    )
+    def test_voltage_levels(self, voltage, model, expected):
+        assert IT600Gateway._voltage_to_battery_pct(voltage, model) == expected
+
+
 class TestDeviceName:
     """Test IT600Gateway._device_name static method."""
 
@@ -405,7 +437,7 @@ class TestRefreshClimateDevices:
                         "FirmwareVersion": "1.0",
                     },
                     "sBasicS": {"ManufactureName": "SALUS"},
-                    "DeviceL": {"ModelIdentifier_i": "iT600"},
+                    "DeviceL": {"ModelIdentifier_i": "SQ610RF"},
                 }
             ],
         }
@@ -508,7 +540,7 @@ class TestRefreshClimateDevices:
                         "FirmwareVersion": "1.0",
                     },
                     "sBasicS": {"ManufactureName": "SALUS"},
-                    "DeviceL": {"ModelIdentifier_i": "iT600"},
+                    "DeviceL": {"ModelIdentifier_i": "SQ610RF"},
                 }
             ],
         }
@@ -523,15 +555,239 @@ class TestRefreshClimateDevices:
         bat = gw.get_sensor_devices()["thermo_lvl_battery"]
         assert bat.state == expected_pct
 
+    async def test_battery_not_created_when_raw_value_zero(self):
+        """Non-battery model (iT600) always reports 0 in Status_d —
+        no battery sensor should be created."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "thermo_nob"}, "sIT600TH": {}}]
+        status_d = "0" * 110  # char 99 is '0'
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "thermo_nob", "Endpoint": 1},
+                    "sIT600TH": {
+                        "LocalTemperature_x100": 2000,
+                        "HeatingSetpoint_x100": 2200,
+                        "MaxHeatSetpoint_x100": 3500,
+                        "MinHeatSetpoint_x100": 500,
+                        "HoldType": 0,
+                        "RunningState": 0,
+                        "Status_d": status_d,
+                    },
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "No Battery"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "iT600"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        sensors = gw.get_sensor_devices()
+        assert "thermo_nob_battery" not in sensors
+
+    async def test_battery_created_for_sq610rf_at_zero(self):
+        """SQ610RF at 0 means critical battery — sensor IS created."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "thermo_sq"}, "sIT600TH": {}}]
+        status_d = "0" * 110  # char 99 is '0'
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "thermo_sq", "Endpoint": 1},
+                    "sIT600TH": {
+                        "LocalTemperature_x100": 2000,
+                        "HeatingSetpoint_x100": 2200,
+                        "MaxHeatSetpoint_x100": 3500,
+                        "MinHeatSetpoint_x100": 500,
+                        "HoldType": 0,
+                        "RunningState": 0,
+                        "Status_d": status_d,
+                    },
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "SQ Battery"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SQ610RF"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        sensors = gw.get_sensor_devices()
+        assert "thermo_sq_battery" in sensors
+        assert sensors["thermo_sq_battery"].state == 0
+
     async def test_empty_list_clears_devices(self):
         gw = _make_gateway()
         await gw._refresh_climate_devices([])
         assert gw.get_climate_devices() == {}
 
+    async def test_empty_list_clears_error_sensors(self):
+        gw = _make_gateway()
+        await gw._refresh_climate_devices([])
+        assert gw.get_binary_sensor_devices() == {}
+
 
 # ---------------------------------------------------------------------------
-#  Refresh — sensors
+#  Refresh — thermostat error sensors
 # ---------------------------------------------------------------------------
+
+
+class TestRefreshClimateErrorSensors:
+    """Test sIT600TH Error* fields are parsed into binary sensors."""
+
+    @staticmethod
+    def _error_response(**errors) -> dict:
+        th = {
+            "LocalTemperature_x100": 2100,
+            "HeatingSetpoint_x100": 2200,
+            "MaxHeatSetpoint_x100": 3500,
+            "MinHeatSetpoint_x100": 500,
+            "HoldType": 0,
+            "RunningState": 0,
+        }
+        th.update(errors)
+        return {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "err_th", "Endpoint": 1},
+                    "sIT600TH": th,
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "Error TH"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "iT600"},
+                }
+            ],
+        }
+
+    async def test_error32_creates_battery_binary_sensor(self):
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error32=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "err_th_error32" in bs
+        dev = bs["err_th_error32"]
+        assert dev.is_on is True
+        assert dev.device_class == "battery"
+        assert dev.parent_unique_id == "err_th"
+        assert "Low battery" in dev.name
+
+    async def test_error22_creates_battery_binary_sensor(self):
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error22=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "err_th_error22" in bs
+        dev = bs["err_th_error22"]
+        assert dev.is_on is True
+        assert dev.device_class == "battery"
+
+    async def test_error01_creates_problem_binary_sensor(self):
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error01=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "err_th_error01" in bs
+        dev = bs["err_th_error01"]
+        assert dev.is_on is True
+        assert dev.device_class == "problem"
+
+    async def test_error_value_zero_means_not_active(self):
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error05=0)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "err_th_error05" in bs
+        assert bs["err_th_error05"].is_on is False
+
+    async def test_unknown_error_keys_are_ignored(self):
+        """Keys not in THERMOSTAT_ERROR_CODES are silently skipped."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error99=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "err_th_error99" not in bs
+
+    async def test_multiple_errors_parsed(self):
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(Error01=1, Error07=0, Error32=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert bs["err_th_error01"].is_on is True
+        assert bs["err_th_error07"].is_on is False
+        assert bs["err_th_error32"].is_on is True
 
 
 class TestRefreshSensorDevices:
@@ -575,6 +831,42 @@ class TestRefreshSensorDevices:
         gw = _make_gateway()
         await gw._refresh_sensor_devices([])
         assert gw.get_sensor_devices() == {}
+
+    async def test_battery_voltage_creates_battery_sensor(self):
+        """BatteryVoltage_x10 from sPowerS creates a battery%  sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "sens_v"}, "sTempS": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "sens_v", "Endpoint": 1},
+                    "sTempS": {"MeasuredValue_x100": 2100},
+                    "sPowerS": {"BatteryVoltage_x10": 29},
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "Volt Sensor"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "TS600"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_sensor_devices(devices)
+
+        devs = gw.get_sensor_devices()
+        assert "sens_v_battery" in devs
+        bat = devs["sens_v_battery"]
+        assert bat.device_class == "battery"
+        assert bat.state == 100  # 2.9V → 100% on door curve
+        assert bat.parent_unique_id == "sens_v"
 
 
 # ---------------------------------------------------------------------------
@@ -676,6 +968,77 @@ class TestRefreshBinarySensorDevices:
             await gw._refresh_binary_sensor_devices(devices)
 
         assert gw.get_binary_sensor_devices() == {}
+
+    async def test_low_battery_iaszs_creates_binary_sensor(self):
+        """ErrorIASZSLowBattery creates a battery binary sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "bs_lb"}, "sIASZS": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "bs_lb", "Endpoint": 1},
+                    "sIASZS": {
+                        "ErrorIASZSAlarmed1": 0,
+                        "ErrorIASZSLowBattery": 1,
+                    },
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "Door"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SW600"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_binary_sensor_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "bs_lb_low_battery" in bs
+        dev = bs["bs_lb_low_battery"]
+        assert dev.is_on is True
+        assert dev.device_class == "battery"
+        assert dev.parent_unique_id == "bs_lb"
+
+    async def test_low_battery_powers_creates_binary_sensor(self):
+        """ErrorPowerSLowBattery creates a battery binary sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "bs_plb"}, "sIASZS": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "bs_plb", "Endpoint": 1},
+                    "sIASZS": {"ErrorIASZSAlarmed1": 0},
+                    "sPowerS": {"ErrorPowerSLowBattery": 0},
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "Window"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SW600"},
+                }
+            ],
+        }
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_binary_sensor_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "bs_plb_low_battery" in bs
+        assert bs["bs_plb_low_battery"].is_on is False
 
 
 # ---------------------------------------------------------------------------

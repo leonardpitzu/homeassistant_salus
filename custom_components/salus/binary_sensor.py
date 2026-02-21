@@ -102,6 +102,12 @@ class SalusBinarySensor(BinarySensorEntity):
     @property
     def device_info(self) -> dict:
         d = self._device
+        if d.parent_unique_id:
+            # Child sensor (e.g. error) — attach to the parent device
+            # without overriding its name or other attributes.
+            return {
+                "identifiers": {(DOMAIN, d.parent_unique_id)},
+            }
         return {
             "name": d.name,
             "identifiers": {(DOMAIN, d.unique_id)},

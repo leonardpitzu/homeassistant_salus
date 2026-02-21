@@ -11,12 +11,16 @@ import aiohttp
 from aiohttp import client_exceptions
 
 from .const import (
+    BATTERY_ERROR_CODES,
+    BATTERY_OEM_MODELS,
+    BATTERY_VOLTAGE_THRESHOLDS,
     CURRENT_HVAC_COOL,
     CURRENT_HVAC_COOL_IDLE,
     CURRENT_HVAC_HEAT,
     CURRENT_HVAC_HEAT_IDLE,
     CURRENT_HVAC_IDLE,
     CURRENT_HVAC_OFF,
+    DOOR_VOLTAGE_MODELS,
     FAN_MODE_AUTO,
     FAN_MODE_HIGH,
     FAN_MODE_LOW,
@@ -38,6 +42,8 @@ from .const import (
     SUPPORT_SET_POSITION,
     SUPPORT_TARGET_TEMPERATURE,
     TEMP_CELSIUS,
+    THERMOSTAT_ERROR_CODES,
+    WINDOW_VOLTAGE_MODELS,
 )
 from .encryptor import IT600Encryptor
 from .exceptions import (
@@ -96,6 +102,8 @@ class IT600Gateway:
         self._sensor_devices: dict[str, SensorDevice] = {}
         self._battery_sensor_devices: dict[str, SensorDevice] = {}
         self._sensor_update_callbacks: list[Callable[..., Awaitable[None]]] = []
+
+        self._error_binary_sensor_devices: dict[str, BinarySensorDevice] = {}
 
     # ------------------------------------------------------------------
     #  Connection
@@ -432,6 +440,30 @@ class IT600Gateway:
                 if send_callback:
                     self._sensor_devices[device.unique_id] = device
                     await self._send_sensor_update_callback(device.unique_id)
+
+                # BatteryVoltage_x10 → percentage battery sensor
+                voltage_raw = ds.get("sPowerS", {}).get(
+                    "BatteryVoltage_x10"
+                )
+                if voltage_raw is not None:
+                    voltage = voltage_raw / 10
+                    pct = self._voltage_to_battery_pct(voltage, model)
+                    if pct is not None:
+                        bat_uid = f"{unique_id}_battery"
+                        bat = SensorDevice(
+                            available=device.available,
+                            name=f"{device.name} Battery",
+                            unique_id=bat_uid,
+                            state=pct,
+                            unit_of_measurement="%",
+                            device_class="battery",
+                            data=ds["data"],
+                            manufacturer=device.manufacturer,
+                            model=device.model,
+                            sw_version=device.sw_version,
+                            parent_unique_id=unique_id,
+                        )
+                        local[bat_uid] = bat
             except Exception:
                 _LOGGER.exception("Failed to poll sensor %s", unique_id)
 
@@ -504,6 +536,42 @@ class IT600Gateway:
                 )
                 local[device.unique_id] = device
 
+                # Low-battery binary sensors from sPowerS / sIASZS
+                low_batt_iaszs = ds.get("sIASZS", {}).get(
+                    "ErrorIASZSLowBattery"
+                )
+                low_batt_power = ds.get("sPowerS", {}).get(
+                    "ErrorPowerSLowBattery"
+                )
+                if low_batt_iaszs is not None:
+                    lb_uid = f"{unique_id}_low_battery"
+                    local[lb_uid] = BinarySensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Low battery",
+                        unique_id=lb_uid,
+                        is_on=low_batt_iaszs == 1,
+                        device_class="battery",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                    )
+                elif low_batt_power is not None:
+                    lb_uid = f"{unique_id}_low_battery"
+                    local[lb_uid] = BinarySensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Low battery",
+                        unique_id=lb_uid,
+                        is_on=low_batt_power == 1,
+                        device_class="battery",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                    )
+
                 if send_callback:
                     self._binary_sensor_devices[device.unique_id] = device
                     await self._send_binary_sensor_update_callback(
@@ -526,10 +594,12 @@ class IT600Gateway:
     ) -> None:
         local: dict[str, ClimateDevice] = {}
         battery_local: dict[str, SensorDevice] = {}
+        error_local: dict[str, BinarySensorDevice] = {}
 
         if not devices:
             self._climate_devices = local
             self._battery_sensor_devices = battery_local
+            self._error_binary_sensor_devices = error_local
             return
 
         status = await self._make_encrypted_request(
@@ -722,9 +792,16 @@ class IT600Gateway:
 
                 local[device.unique_id] = device
 
-                # Extract battery level from Status_d character 99 (0-5)
+                # Extract battery level from Status_d character 99 (0-5).
+                # Only models in BATTERY_OEM_MODELS (SQ610RF etc.) are
+                # battery-powered and report meaningful values.
+                # All other IT600 devices are mains-powered and always
+                # report 0 — skip those.  A value of 0 on a battery
+                # model means critical; the HA battery entity will show
+                # the low-battery warning automatically.
                 status_d = (th or {}).get("Status_d", "")
-                if len(status_d) > 99:
+                is_battery_model = model in BATTERY_OEM_MODELS
+                if is_battery_model and len(status_d) > 99:
                     try:
                         raw_battery = int(status_d[99])
                         if 0 <= raw_battery <= 5:
@@ -746,6 +823,31 @@ class IT600Gateway:
                     except (ValueError, IndexError):
                         pass
 
+                # Parse thermostat error flags (Error01 … Error32)
+                if th is not None:
+                    for error_key, description in THERMOSTAT_ERROR_CODES.items():
+                        value = th.get(error_key)
+                        if value is None:
+                            continue
+                        error_uid = f"{unique_id}_{error_key.lower()}"
+                        error_sensor = BinarySensorDevice(
+                            available=device.available,
+                            name=f"{device.name} {description}",
+                            unique_id=error_uid,
+                            is_on=value == 1,
+                            device_class=(
+                                "battery"
+                                if error_key in BATTERY_ERROR_CODES
+                                else "problem"
+                            ),
+                            data=ds["data"],
+                            manufacturer=device.manufacturer,
+                            model=device.model,
+                            sw_version=device.sw_version,
+                            parent_unique_id=unique_id,
+                        )
+                        error_local[error_uid] = error_sensor
+
                 if send_callback:
                     self._climate_devices[device.unique_id] = device
                     await self._send_climate_update_callback(device.unique_id)
@@ -754,6 +856,7 @@ class IT600Gateway:
 
         self._climate_devices = local
         self._battery_sensor_devices = battery_local
+        self._error_binary_sensor_devices = error_local
         _LOGGER.debug("Refreshed %s climate devices", len(local))
 
     # ------------------------------------------------------------------
@@ -819,7 +922,7 @@ class IT600Gateway:
         return self._climate_devices.get(device_id)
 
     def get_binary_sensor_devices(self) -> dict[str, BinarySensorDevice]:
-        return self._binary_sensor_devices
+        return {**self._binary_sensor_devices, **self._error_binary_sensor_devices}
 
     def get_binary_sensor_device(
         self, device_id: str
@@ -1080,6 +1183,32 @@ class IT600Gateway:
             return json.loads(raw)["deviceName"]
         except (json.JSONDecodeError, KeyError):
             return fallback
+
+    @staticmethod
+    def _voltage_to_battery_pct(
+        voltage: float, model: str | None
+    ) -> int | None:
+        """Convert BatteryVoltage_x10 (in volts) to a percentage.
+
+        Uses thresholds extracted from the official Salus web-app JS.
+        Returns *None* when the model is unknown / has no mapping.
+        """
+        if model in WINDOW_VOLTAGE_MODELS:
+            curve = "window"
+        elif model in DOOR_VOLTAGE_MODELS:
+            curve = "door"
+        else:
+            # Use door curve as a safe default for any battery device
+            curve = "door"
+
+        thresholds = BATTERY_VOLTAGE_THRESHOLDS.get(curve)
+        if thresholds is None:
+            return None
+
+        for threshold_v, pct, _status in thresholds:
+            if voltage >= threshold_v:
+                return pct
+        return 0
 
     # ------------------------------------------------------------------
     #  Encrypted HTTP transport

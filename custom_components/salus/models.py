@@ -61,6 +61,7 @@ class BinarySensorDevice:
     manufacturer: str
     model: str | None
     sw_version: str | None
+    parent_unique_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

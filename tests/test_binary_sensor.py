@@ -64,3 +64,36 @@ class TestSalusBinarySensorProperties:
         )
         entity = _make_entity(device)
         assert entity.is_on is True
+
+
+class TestSalusBinarySensorParentDevice:
+    """Test binary sensor entity with parent_unique_id (error sensors)."""
+
+    @staticmethod
+    def _error_device() -> BinarySensorDevice:
+        return BinarySensorDevice(
+            available=True,
+            name="Living Room Low battery",
+            unique_id="climate_001_error32",
+            is_on=True,
+            device_class="battery",
+            data={"UniID": "climate_001", "Endpoint": 1},
+            manufacturer="SALUS",
+            model="iT600",
+            sw_version="1.0",
+            parent_unique_id="climate_001",
+        )
+
+    def test_device_info_uses_parent_id(self):
+        entity = _make_entity(self._error_device())
+        info = entity.device_info
+        assert ("salus", "climate_001") in info["identifiers"]
+        assert "name" not in info
+
+    def test_device_class(self):
+        entity = _make_entity(self._error_device())
+        assert entity.device_class == "battery"
+
+    def test_is_on(self):
+        entity = _make_entity(self._error_device())
+        assert entity.is_on is True
