@@ -740,7 +740,25 @@ class IT600Gateway:
                         if len(status_d) >= 34
                         else 0
                     )
-                    if heating_ctrl == 1:
+                    # Fall back to model-name check if Status_d is absent or
+                    # HeatingControl is 0: SQ610/SQ610RF/SQ610(WB) all have a
+                    # humidity sensor; SQ610RFNH ("No Humidity") does not.
+                    model_str = model or ""
+                    model_has_humidity = (
+                        "SQ610" in model_str and "RFNH" not in model_str
+                    )
+                    _LOGGER.debug(
+                        "Humidity gate for %s: model=%r status_d=%r "
+                        "heating_ctrl=%d model_has_humidity=%s "
+                        "SunnySetpoint_x100=%s",
+                        unique_id,
+                        model_str,
+                        status_d,
+                        heating_ctrl,
+                        model_has_humidity,
+                        th.get("SunnySetpoint_x100"),
+                    )
+                    if heating_ctrl == 1 or model_has_humidity:
                         sunny = th.get("SunnySetpoint_x100")
                         if sunny is not None:
                             humidity = float(sunny)
