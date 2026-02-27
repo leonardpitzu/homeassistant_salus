@@ -706,14 +706,6 @@ class IT600Gateway:
                 scomm = ds.get("sComm")
                 sfans = ds.get("sFanS")
 
-                _LOGGER.debug(
-                    "Climate device %s: model=%r keys=%s th=%s",
-                    unique_id,
-                    model,
-                    sorted(k for k in ds if not k.startswith("_")),
-                    th is not None,
-                )
-
                 common = {
                     "available": ds.get("sZDOInfo", {}).get(
                         "OnlineStatus_i", 1
@@ -754,17 +746,6 @@ class IT600Gateway:
                     model_str = model or ""
                     model_has_humidity = (
                         "SQ610" in model_str and "RFNH" not in model_str
-                    )
-                    _LOGGER.debug(
-                        "Humidity gate for %s: model=%r status_d=%r "
-                        "heating_ctrl=%d model_has_humidity=%s "
-                        "SunnySetpoint_x100=%s",
-                        unique_id,
-                        model_str,
-                        status_d,
-                        heating_ctrl,
-                        model_has_humidity,
-                        th.get("SunnySetpoint_x100"),
                     )
                     if heating_ctrl == 1 or model_has_humidity:
                         sunny = th.get("SunnySetpoint_x100")
