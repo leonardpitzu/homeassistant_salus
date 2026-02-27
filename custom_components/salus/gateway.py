@@ -104,6 +104,7 @@ class IT600Gateway:
 
         self._sensor_devices: dict[str, SensorDevice] = {}
         self._battery_sensor_devices: dict[str, SensorDevice] = {}
+        self._humidity_sensor_devices: dict[str, SensorDevice] = {}
         self._energy_sensor_devices: dict[str, SensorDevice] = {}
         self._sensor_update_callbacks: list[Callable[..., Awaitable[None]]] = []
 
@@ -668,11 +669,13 @@ class IT600Gateway:
     ) -> None:
         local: dict[str, ClimateDevice] = {}
         battery_local: dict[str, SensorDevice] = {}
+        humidity_local: dict[str, SensorDevice] = {}
         error_local: dict[str, BinarySensorDevice] = {}
 
         if not devices:
             self._climate_devices = local
             self._battery_sensor_devices = battery_local
+            self._humidity_sensor_devices = humidity_local
             self._error_binary_sensor_devices = error_local
             return
 
@@ -721,6 +724,27 @@ class IT600Gateway:
                     )
                     if rh_val is not None:
                         humidity = rh_val / 100
+                        hum_uid = f"{unique_id}_humidity"
+                        humidity_local[hum_uid] = SensorDevice(
+                            available=ds.get("sZDOInfo", {}).get(
+                                "OnlineStatus_i", 1
+                            ) == 1,
+                            name=f"{self._device_name(ds, 'Unknown')} Humidity",
+                            unique_id=hum_uid,
+                            state=humidity,
+                            unit_of_measurement="%",
+                            device_class="humidity",
+                            data=ds["data"],
+                            manufacturer=ds.get("sBasicS", {}).get(
+                                "ManufactureName", "SALUS"
+                            ),
+                            model=model,
+                            sw_version=ds.get("sZDO", {}).get(
+                                "FirmwareVersion"
+                            ),
+                            parent_unique_id=unique_id,
+                            entity_category=None,
+                        )
 
                     hold = th["HoldType"]
                     running = th["RunningState"]
@@ -962,6 +986,7 @@ class IT600Gateway:
 
         self._climate_devices = local
         self._battery_sensor_devices = battery_local
+        self._humidity_sensor_devices = humidity_local
         self._error_binary_sensor_devices = error_local
         _LOGGER.debug("Refreshed %s climate devices", len(local))
 
@@ -1052,12 +1077,14 @@ class IT600Gateway:
         return {
             **self._sensor_devices,
             **self._battery_sensor_devices,
+            **self._humidity_sensor_devices,
             **self._energy_sensor_devices,
         }
 
     def get_sensor_device(self, device_id: str) -> SensorDevice | None:
         return (self._sensor_devices.get(device_id)
                 or self._battery_sensor_devices.get(device_id)
+                or self._humidity_sensor_devices.get(device_id)
                 or self._energy_sensor_devices.get(device_id))
 
     # ------------------------------------------------------------------

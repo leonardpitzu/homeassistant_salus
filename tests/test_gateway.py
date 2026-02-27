@@ -364,6 +364,68 @@ class TestRefreshClimateDevices:
         dev = gw.get_climate_device("sq_hum")
         assert dev.current_humidity == 45.2
 
+    async def test_humidity_sensor_device_created_from_thermostat(self):
+        """A standalone humidity SensorDevice should be created for sIT600TH thermostats."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "sq_hum"}, "sIT600TH": {}}]
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "sq_hum", "Endpoint": 1},
+                    "sIT600TH": {
+                        "LocalTemperature_x100": 2200,
+                        "HeatingSetpoint_x100": 2400,
+                        "MaxHeatSetpoint_x100": 3500,
+                        "MinHeatSetpoint_x100": 500,
+                        "HoldType": 0,
+                        "RunningState": 0,
+                    },
+                    "sRelativeHumidity": {"MeasuredValue_x100": 4520},
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "SQ Humid"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SQ610RF"},
+                }
+            ],
+        }
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock, return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        sensor_devs = gw.get_sensor_devices()
+        assert "sq_hum_humidity" in sensor_devs, (
+            "humidity SensorDevice should be exposed via get_sensor_devices()"
+        )
+        hum = sensor_devs["sq_hum_humidity"]
+        assert hum.device_class == "humidity"
+        assert hum.state == 45.2
+        assert hum.unit_of_measurement == "%"
+        assert hum.parent_unique_id == "sq_hum"
+        assert hum.entity_category is None
+
+        # get_sensor_device() should also find it
+        assert gw.get_sensor_device("sq_hum_humidity") is hum
+
+    async def test_humidity_sensor_not_created_when_no_cluster(self):
+        """No humidity SensorDevice should be created when sRelativeHumidity is absent."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "sq_noh"}, "sIT600TH": {}}]
+        resp = self._it600th_response(hold=0, running=0)
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock, return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        sensor_devs = gw.get_sensor_devices()
+        assert "thermo_001_humidity" not in sensor_devs
+
     async def test_humidity_none_when_no_cluster(self):
         """When sRelativeHumidity is absent, humidity should be None."""
         gw = _make_gateway()
