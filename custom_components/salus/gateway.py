@@ -706,6 +706,14 @@ class IT600Gateway:
                 scomm = ds.get("sComm")
                 sfans = ds.get("sFanS")
 
+                _LOGGER.debug(
+                    "Climate device %s: model=%r keys=%s th=%s",
+                    unique_id,
+                    model,
+                    sorted(k for k in ds if not k.startswith("_")),
+                    th is not None,
+                )
+
                 common = {
                     "available": ds.get("sZDOInfo", {}).get(
                         "OnlineStatus_i", 1
