@@ -326,9 +326,11 @@ class TestRefreshClimateDevices:
         assert dev.hvac_action == CURRENT_HVAC_OFF
         assert dev.preset_mode == PRESET_OFF
 
-    async def test_humidity_from_srelativehumidity(self):
-        """Humidity should come from sRelativeHumidity, not SunnySetpoint."""
+    async def test_humidity_from_heating_control_and_sunny_setpoint(self):
+        """HeatingControl=1 + SunnySetpoint_x100 → current_humidity on climate entity."""
         gw = _make_gateway()
+        # Status_d: 32 zero-chars then "01" → HeatingControl = int("01",16) = 1
+        status_d = "0" * 32 + "01"
         devices = [{"data": {"UniID": "sq_hum"}, "sIT600TH": {}}]
         resp = {
             "status": "success",
@@ -342,9 +344,9 @@ class TestRefreshClimateDevices:
                         "MinHeatSetpoint_x100": 500,
                         "HoldType": 0,
                         "RunningState": 0,
-                        "SunnySetpoint_x100": 9999,
+                        "Status_d": status_d,
+                        "SunnySetpoint_x100": 55,  # 55 % humidity (plain integer)
                     },
-                    "sRelativeHumidity": {"MeasuredValue_x100": 4520},
                     "sZDOInfo": {"OnlineStatus_i": 1},
                     "sZDO": {
                         "DeviceName": '{"deviceName": "SQ Humid"}',
@@ -362,11 +364,12 @@ class TestRefreshClimateDevices:
             await gw._refresh_climate_devices(devices)
 
         dev = gw.get_climate_device("sq_hum")
-        assert dev.current_humidity == 45.2
+        assert dev.current_humidity == 55.0
 
     async def test_humidity_sensor_device_created_from_thermostat(self):
-        """A standalone humidity SensorDevice should be created for sIT600TH thermostats."""
+        """HeatingControl=1 creates a standalone humidity SensorDevice."""
         gw = _make_gateway()
+        status_d = "0" * 32 + "01"
         devices = [{"data": {"UniID": "sq_hum"}, "sIT600TH": {}}]
         resp = {
             "status": "success",
@@ -380,8 +383,9 @@ class TestRefreshClimateDevices:
                         "MinHeatSetpoint_x100": 500,
                         "HoldType": 0,
                         "RunningState": 0,
+                        "Status_d": status_d,
+                        "SunnySetpoint_x100": 62,
                     },
-                    "sRelativeHumidity": {"MeasuredValue_x100": 4520},
                     "sZDOInfo": {"OnlineStatus_i": 1},
                     "sZDO": {
                         "DeviceName": '{"deviceName": "SQ Humid"}',
@@ -404,19 +408,43 @@ class TestRefreshClimateDevices:
         )
         hum = sensor_devs["sq_hum_humidity"]
         assert hum.device_class == "humidity"
-        assert hum.state == 45.2
+        assert hum.state == 62.0
         assert hum.unit_of_measurement == "%"
         assert hum.parent_unique_id == "sq_hum"
         assert hum.entity_category is None
-
-        # get_sensor_device() should also find it
         assert gw.get_sensor_device("sq_hum_humidity") is hum
 
-    async def test_humidity_sensor_not_created_when_no_cluster(self):
-        """No humidity SensorDevice should be created when sRelativeHumidity is absent."""
+    async def test_humidity_sensor_not_created_when_heating_control_zero(self):
+        """HeatingControl=0 (e.g. SQ610RFNH) → no humidity sensor created."""
         gw = _make_gateway()
+        # Status_d: all zeros → HeatingControl = 0
+        status_d = "0" * 34
         devices = [{"data": {"UniID": "sq_noh"}, "sIT600TH": {}}]
-        resp = self._it600th_response(hold=0, running=0)
+        resp = {
+            "status": "success",
+            "id": [
+                {
+                    "data": {"UniID": "sq_noh", "Endpoint": 1},
+                    "sIT600TH": {
+                        "LocalTemperature_x100": 2100,
+                        "HeatingSetpoint_x100": 2200,
+                        "MaxHeatSetpoint_x100": 3500,
+                        "MinHeatSetpoint_x100": 500,
+                        "HoldType": 0,
+                        "RunningState": 0,
+                        "Status_d": status_d,
+                        "SunnySetpoint_x100": 50,  # present but should be ignored
+                    },
+                    "sZDOInfo": {"OnlineStatus_i": 1},
+                    "sZDO": {
+                        "DeviceName": '{"deviceName": "SQ NH"}',
+                        "FirmwareVersion": "1.0",
+                    },
+                    "sBasicS": {"ManufactureName": "SALUS"},
+                    "DeviceL": {"ModelIdentifier_i": "SQ610RFNH"},
+                }
+            ],
+        }
         with patch.object(
             gw, "_make_encrypted_request",
             new_callable=AsyncMock, return_value=resp,
@@ -424,10 +452,11 @@ class TestRefreshClimateDevices:
             await gw._refresh_climate_devices(devices)
 
         sensor_devs = gw.get_sensor_devices()
-        assert "thermo_001_humidity" not in sensor_devs
+        assert "sq_noh_humidity" not in sensor_devs
+        assert gw.get_climate_device("sq_noh").current_humidity is None
 
     async def test_humidity_none_when_no_cluster(self):
-        """When sRelativeHumidity is absent, humidity should be None."""
+        """When Status_d is absent/short, humidity should be None."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "sq_noh"}, "sIT600TH": {}}]
         resp = self._it600th_response(hold=0, running=0)
@@ -439,6 +468,7 @@ class TestRefreshClimateDevices:
 
         dev = gw.get_climate_device("thermo_001")
         assert dev.current_humidity is None
+        assert "thermo_001_humidity" not in gw.get_sensor_devices()
 
     async def test_fc600_heating(self):
         gw = _make_gateway()

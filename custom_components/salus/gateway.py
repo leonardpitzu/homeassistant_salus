@@ -490,6 +490,35 @@ class IT600Gateway:
                     self._sensor_devices[device.unique_id] = device
                     await self._send_sensor_update_callback(device.unique_id)
 
+                # sRelativeHumidity (standard Zigbee 0x0405 cluster) — present on
+                # standalone multi-sensors such as TS600 but NOT on thermostats.
+                # For thermostats (sIT600TH) humidity is read in
+                # _refresh_climate_devices from SunnySetpoint_x100 instead.
+                humidity_raw = (
+                    ds.get("sRelativeHumidity", {}).get("MeasuredValue_x100")
+                )
+                if humidity_raw is not None:
+                    hum_uid = f"{unique_id}_humidity"
+                    hum = SensorDevice(
+                        available=device.available,
+                        name=f"{device.name} Humidity",
+                        unique_id=hum_uid,
+                        state=humidity_raw / 100,
+                        unit_of_measurement="%",
+                        device_class="humidity",
+                        data=ds["data"],
+                        manufacturer=device.manufacturer,
+                        model=device.model,
+                        sw_version=device.sw_version,
+                        parent_unique_id=unique_id,
+                        entity_category=None,
+                    )
+                    local[hum_uid] = hum
+
+                    if send_callback:
+                        self._sensor_devices[hum_uid] = hum
+                        await self._send_sensor_update_callback(hum_uid)
+
                 # BatteryVoltage_x10 → percentage battery sensor
                 voltage_raw = ds.get("sPowerS", {}).get(
                     "BatteryVoltage_x10"
@@ -514,28 +543,6 @@ class IT600Gateway:
                             entity_category="diagnostic",
                         )
                         local[bat_uid] = bat
-
-                # sRelativeHumidity → humidity sensor
-                rh_raw = ds.get("sRelativeHumidity", {}).get(
-                    "MeasuredValue_x100"
-                )
-                if rh_raw is not None:
-                    hum_uid = f"{unique_id}_humidity"
-                    dev_name = self._device_name(ds, "Unknown")
-                    local[hum_uid] = SensorDevice(
-                        available=device.available,
-                        name=f"{dev_name} Humidity",
-                        unique_id=hum_uid,
-                        state=rh_raw / 100,
-                        unit_of_measurement="%",
-                        device_class="humidity",
-                        data=ds["data"],
-                        manufacturer=device.manufacturer,
-                        model=device.model,
-                        sw_version=device.sw_version,
-                        parent_unique_id=unique_id,
-                        entity_category=None,
-                    )
 
             except Exception:
                 _LOGGER.exception("Failed to poll sensor %s", unique_id)
@@ -719,32 +726,45 @@ class IT600Gateway:
 
                 if th is not None:
                     humidity: float | None = None
-                    rh_val = ds.get("sRelativeHumidity", {}).get(
-                        "MeasuredValue_x100"
+                    # HeatingControl is stored in Status_d at hex positions
+                    # 32-33 (propStart:32, propLen:2 per official Salus cloud
+                    # app JS).  A value of 1 means the device has a humidity
+                    # sensor; SunnySetpoint_x100 then holds the current
+                    # relative humidity as a plain integer (0-100 %).
+                    # This applies to SQ610 / SQ610RF / SQ610(WB) family.
+                    # SQ610RFNH and plain iT600 thermostats have
+                    # HeatingControl == 0 and are correctly excluded.
+                    status_d = th.get("Status_d", "")
+                    heating_ctrl = (
+                        int(status_d[32:34], 16)
+                        if len(status_d) >= 34
+                        else 0
                     )
-                    if rh_val is not None:
-                        humidity = rh_val / 100
-                        hum_uid = f"{unique_id}_humidity"
-                        humidity_local[hum_uid] = SensorDevice(
-                            available=ds.get("sZDOInfo", {}).get(
-                                "OnlineStatus_i", 1
-                            ) == 1,
-                            name=f"{self._device_name(ds, 'Unknown')} Humidity",
-                            unique_id=hum_uid,
-                            state=humidity,
-                            unit_of_measurement="%",
-                            device_class="humidity",
-                            data=ds["data"],
-                            manufacturer=ds.get("sBasicS", {}).get(
-                                "ManufactureName", "SALUS"
-                            ),
-                            model=model,
-                            sw_version=ds.get("sZDO", {}).get(
-                                "FirmwareVersion"
-                            ),
-                            parent_unique_id=unique_id,
-                            entity_category=None,
-                        )
+                    if heating_ctrl == 1:
+                        sunny = th.get("SunnySetpoint_x100")
+                        if sunny is not None:
+                            humidity = float(sunny)
+                            hum_uid = f"{unique_id}_humidity"
+                            humidity_local[hum_uid] = SensorDevice(
+                                available=ds.get("sZDOInfo", {}).get(
+                                    "OnlineStatus_i", 1
+                                ) == 1,
+                                name=f"{self._device_name(ds, 'Unknown')} Humidity",
+                                unique_id=hum_uid,
+                                state=humidity,
+                                unit_of_measurement="%",
+                                device_class="humidity",
+                                data=ds["data"],
+                                manufacturer=ds.get("sBasicS", {}).get(
+                                    "ManufactureName", "SALUS"
+                                ),
+                                model=model,
+                                sw_version=ds.get("sZDO", {}).get(
+                                    "FirmwareVersion"
+                                ),
+                                parent_unique_id=unique_id,
+                                entity_category=None,
+                            )
 
                     hold = th["HoldType"]
                     running = th["RunningState"]
