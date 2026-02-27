@@ -76,6 +76,18 @@ BATTERY_ERROR_CODES: frozenset[str] = frozenset({"Error22", "Error32"})
 # are mains-powered and always report 0 (which is meaningless).
 BATTERY_OEM_MODELS: frozenset[str] = frozenset({"SQ610RF", "SQ610RF(WB)", "SQ610RFNH"})
 
+# Mapping from raw battery level (0-5) to percentage for Status_d character 99.
+# Based on thermostat display: 5=4 lines (100%), 4=3 lines (75%), 3=2 lines (50%),
+# 2=1 line (25%), 1=empty with "low battery" warning (10%), 0=critical (0%).
+BATTERY_LEVEL_MAP: dict[int, int] = {
+    0: 0,    # Critical (rarely seen)
+    1: 10,   # Low battery warning, empty symbol
+    2: 25,   # 1 line visible (quarter)
+    3: 50,   # 2 lines visible (half)
+    4: 75,   # 3 lines visible (three-quarters)
+    5: 100,  # 4 lines visible (full)
+}
+
 # ── Voltage-based battery thresholds (BatteryVoltage_x10 / 10 → V) ─
 # Extracted from the official Salus web-app JS.
 # Each entry: (model_set, [(voltage_threshold, percent, status), ...])

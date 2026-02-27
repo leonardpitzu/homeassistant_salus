@@ -513,7 +513,7 @@ class TestRefreshClimateDevices:
         sensors = gw.get_sensor_devices()
         assert "thermo_bat_battery" in sensors
         bat = sensors["thermo_bat_battery"]
-        assert bat.state == 80
+        assert bat.state == 75
         assert bat.device_class == "battery"
         assert bat.unit_of_measurement == "%"
         assert bat.name == "Battery TH Battery"
@@ -576,7 +576,7 @@ class TestRefreshClimateDevices:
 
     @pytest.mark.parametrize(
         ("raw_char", "expected_pct"),
-        [("0", 0), ("1", 20), ("2", 40), ("3", 60), ("4", 80), ("5", 100)],
+        [("0", 0), ("1", 10), ("2", 25), ("3", 50), ("4", 75), ("5", 100)],
     )
     async def test_battery_level_mapping(self, raw_char, expected_pct):
         gw = _make_gateway()

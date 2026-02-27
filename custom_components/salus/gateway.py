@@ -12,6 +12,7 @@ from aiohttp import client_exceptions
 
 from .const import (
     BATTERY_ERROR_CODES,
+    BATTERY_LEVEL_MAP,
     BATTERY_OEM_MODELS,
     BATTERY_VOLTAGE_THRESHOLDS,
     COVER_DEVICE_CLASS_MAP,
@@ -886,7 +887,7 @@ class IT600Gateway:
                                 available=device.available,
                                 name=f"{device.name} Battery",
                                 unique_id=battery_uid,
-                                state=raw_battery * 20,
+                                state=BATTERY_LEVEL_MAP.get(raw_battery, 0),
                                 unit_of_measurement="%",
                                 device_class="battery",
                                 data=ds["data"],
