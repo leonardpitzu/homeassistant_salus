@@ -414,10 +414,10 @@ class TestRefreshClimateDevices:
         assert hum.entity_category is None
         assert gw.get_sensor_device("sq_hum_humidity") is hum
 
-    async def test_humidity_sensor_not_created_when_heating_control_zero(self):
-        """HeatingControl=0 (e.g. SQ610RFNH) → no humidity sensor created."""
+    async def test_humidity_sensor_created_for_sq610rfnh(self):
+        """SQ610RFNH also gets a humidity sensor when SunnySetpoint_x100 is present."""
         gw = _make_gateway()
-        # Status_d: all zeros → HeatingControl = 0
+        # HeatingControl = 0 in Status_d, but model fallback covers SQ610RFNH too.
         status_d = "0" * 34
         devices = [{"data": {"UniID": "sq_noh"}, "sIT600TH": {}}]
         resp = {
@@ -433,7 +433,7 @@ class TestRefreshClimateDevices:
                         "HoldType": 0,
                         "RunningState": 0,
                         "Status_d": status_d,
-                        "SunnySetpoint_x100": 50,  # present but should be ignored
+                        "SunnySetpoint_x100": 50,
                     },
                     "sZDOInfo": {"OnlineStatus_i": 1},
                     "sZDO": {
@@ -452,8 +452,9 @@ class TestRefreshClimateDevices:
             await gw._refresh_climate_devices(devices)
 
         sensor_devs = gw.get_sensor_devices()
-        assert "sq_noh_humidity" not in sensor_devs
-        assert gw.get_climate_device("sq_noh").current_humidity is None
+        assert "sq_noh_humidity" in sensor_devs
+        assert sensor_devs["sq_noh_humidity"].state == 50.0
+        assert gw.get_climate_device("sq_noh").current_humidity == 50.0
 
     async def test_humidity_none_when_no_cluster(self):
         """When Status_d is absent/short, humidity should be None."""

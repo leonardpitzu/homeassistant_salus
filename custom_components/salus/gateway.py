@@ -741,12 +741,12 @@ class IT600Gateway:
                         else 0
                     )
                     # Fall back to model-name check if Status_d is absent or
-                    # HeatingControl is 0: SQ610/SQ610RF/SQ610(WB) all have a
-                    # humidity sensor; SQ610RFNH ("No Humidity") does not.
+                    # HeatingControl is 0: all SQ610 variants are treated as
+                    # potentially having a humidity sensor. Whether the sensor
+                    # actually exists is determined by SunnySetpoint_x100 being
+                    # present in the response.
                     model_str = model or ""
-                    model_has_humidity = (
-                        "SQ610" in model_str and "RFNH" not in model_str
-                    )
+                    model_has_humidity = "SQ610" in model_str
                     if heating_ctrl == 1 or model_has_humidity:
                         sunny = th.get("SunnySetpoint_x100")
                         if sunny is not None:
