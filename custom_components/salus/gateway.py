@@ -1405,6 +1405,12 @@ class IT600Gateway:
                         headers={"content-type": "application/json"},
                     )
                     raw = await resp.read()
+                    _LOGGER.warning(
+                        "Gateway raw response: HTTP %s, %d bytes, hex=%s",
+                        resp.status,
+                        len(raw),
+                        raw.hex(),
+                    )
                     decrypted = self._encryptor.decrypt(raw)
 
                     if self._debug:
