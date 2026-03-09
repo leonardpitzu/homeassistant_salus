@@ -66,7 +66,48 @@ One lock entity per thermostat that supports child lock. Allows **locking/unlock
 3. Enter your gateway's **IP address** and **EUID** (the first 16 characters printed under the gateway's micro-USB port).
 4. The integration will discover all devices on the gateway and create entities automatically.
 
-Data is polled every 30 seconds. All communication is local over your LAN — encrypted with AES-128-CBC.
+Data is polled every 30 seconds. All communication is local over your LAN.
+
+## Encryption / firmware changes
+
+Salus gateways encrypt all local API traffic. Recent firmware updates (UG800, firmware ≥ 2025-07-15) changed the encryption protocol from AES-CBC to RC4. This integration auto-detects the protocol during connection, so no manual configuration is needed.
+
+|  | Legacy (AES-CBC) | New (RC4) |
+|---|---|---|
+| **Affected gateways** | UGE600, older UG800 firmware | UG800 with firmware ≥ 2025-07-15 |
+| **Cipher** | AES-256-CBC (or AES-128-CBC) | RC4 stream cipher |
+| **Key derivation** | `MD5("Salus-{euid}")` — 16-byte hash used as-is (AES-128) or zero-padded to 32 bytes (AES-256) | `MD5(EUID_bytes + first_12_bytes_of_handshake_response)` — per-session key |
+| **IV** | Static, all zeros | N/A (stream cipher) |
+| **Padding** | PKCS7 | None |
+| **Session handshake** | None — key is static | Two-step: POST `/deviceid/read` → POST `/deviceid/write`, server returns a nonce used in key derivation |
+| **Framing** | Plain HTTP body (single block) | Binary frames with `0x16` (continuation) / `0x17` (final) header bytes |
+
+If you are experiencing connection failures after a gateway firmware update, make sure you are running the latest version of this integration.
+
+## Debugging
+
+If you're having issues with the integration, there are two ways to enable debug logging.
+
+### Option 1 — YAML configuration
+
+Add the following to your `configuration.yaml` and restart Home Assistant:
+
+```yaml
+logger:
+  default: info
+  logs:
+    custom_components.salus: debug
+```
+
+### Option 2 — Home Assistant UI
+
+1. Go to **Settings** → **Devices & Services**.
+2. Find the **Salus iT600** integration and click the **⋮** menu.
+3. Select **Enable debug logging**.
+4. Reproduce the issue.
+5. Click **Disable debug logging** — the browser will download a log file you can inspect or attach to a bug report.
+
+This method is useful for one-off troubleshooting since it automatically reverts to the normal log level once you stop it.
 
 ## Troubleshooting
 
