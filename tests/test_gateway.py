@@ -31,7 +31,9 @@ from custom_components.salus.const import (
     SUPPORT_TARGET_TEMPERATURE,
 )
 from custom_components.salus.exceptions import (
+    IT600AuthenticationError,
     IT600CommandError,
+    IT600ConnectionError,
 )
 from custom_components.salus.gateway import IT600Gateway
 
@@ -183,7 +185,7 @@ class TestConnect:
             new_callable=AsyncMock,
             return_value=response,
         ):
-            with pytest.raises(IT600CommandError):
+            with pytest.raises((IT600ConnectionError, IT600AuthenticationError)):
                 await gw.connect()
 
 

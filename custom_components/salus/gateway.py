@@ -143,7 +143,7 @@ class IT600Gateway:
 
             return gateway["sGateway"]["NetworkLANMAC"]
 
-        except IT600ConnectionError as exc:
+        except (IT600ConnectionError, IT600CommandError) as exc:
             # Distinguish bad host from bad EUID: if a plain GET succeeds the
             # host is reachable but the EUID must be wrong.
             try:
@@ -1437,12 +1437,24 @@ class IT600Gateway:
                         )
                         raw = raw[:aligned]
 
-                    decrypted = self._encryptor.decrypt(raw)
+                    try:
+                        decrypted = self._encryptor.decrypt(raw)
+                    except ValueError as exc:
+                        raise IT600CommandError(
+                            "Failed to decrypt gateway response "
+                            "(invalid padding — likely wrong EUID)"
+                        ) from exc
 
                     if self._debug:
                         _LOGGER.debug("Gateway response:\n%s", decrypted)
 
-                    result = json.loads(decrypted)
+                    try:
+                        result = json.loads(decrypted)
+                    except json.JSONDecodeError as exc:
+                        raise IT600CommandError(
+                            "Gateway response decrypted but is not "
+                            "valid JSON (likely wrong EUID)"
+                        ) from exc
 
                     if result.get("status") != "success":
                         _LOGGER.error(
