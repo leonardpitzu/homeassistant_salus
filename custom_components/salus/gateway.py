@@ -1405,12 +1405,30 @@ class IT600Gateway:
                         headers={"content-type": "application/json"},
                     )
                     raw = await resp.read()
-                    _LOGGER.warning(
-                        "Gateway raw response: HTTP %s, %d bytes, hex=%s",
-                        resp.status,
-                        len(raw),
-                        raw.hex(),
-                    )
+
+                    if resp.status != 200:
+                        _LOGGER.error(
+                            "Gateway returned HTTP %s, body: %s",
+                            resp.status,
+                            raw.decode(errors="replace"),
+                        )
+                        raise IT600CommandError(
+                            f"Gateway returned HTTP {resp.status}"
+                        )
+
+                    if len(raw) % 16 != 0:
+                        _LOGGER.error(
+                            "Gateway response is not block-aligned "
+                            "(%d bytes — not a multiple of 16). "
+                            "Plain-text body: %s",
+                            len(raw),
+                            raw.decode(errors="replace"),
+                        )
+                        raise IT600CommandError(
+                            "Gateway returned an unencrypted or malformed response "
+                            f"({len(raw)} bytes)"
+                        )
+
                     decrypted = self._encryptor.decrypt(raw)
 
                     if self._debug:
