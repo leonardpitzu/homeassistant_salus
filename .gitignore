@@ -3,6 +3,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Decompiled APK
+decompiled_app/
+
 # C extensions
 *.so
 

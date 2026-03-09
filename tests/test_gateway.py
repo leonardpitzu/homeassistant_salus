@@ -2042,7 +2042,7 @@ class TestProtocolAutoDetect:
         reject_proto.name = "Fail"
         reject_proto.connect = AsyncMock(
             side_effect=ValueError(
-                "Gateway returned a reject frame (33 bytes, 0xAE trailer)"
+                "Gateway returned a reject frame (0xAE)"
             )
         )
 
@@ -2067,7 +2067,45 @@ class TestProtocolAutoDetect:
             return_value=not_impl,
         ):
             with pytest.raises(
-                IT600UnsupportedFirmwareError, match="reject frame"
+                IT600UnsupportedFirmwareError, match="Security1 handshake failed"
+            ):
+                await gw.connect()
+
+    async def test_new_protocol_frames_produce_specific_error(self):
+        """New-protocol-frame errors → IT600UnsupportedFirmwareError."""
+        gw = _make_gateway()
+
+        new_proto = MagicMock()
+        new_proto.name = "AES-256"
+        new_proto.connect = AsyncMock(
+            side_effect=ValueError(
+                "Gateway returned a new-protocol frame (0xAF, "
+                "counter=123, tag=084b1f)"
+            )
+        )
+
+        not_impl = MagicMock()
+        not_impl.name = "ECDH"
+        not_impl.connect = AsyncMock(
+            side_effect=NotImplementedError("not yet")
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=b"<html>GoAhead</html>")
+        mock_resp.headers = {"Server": "GoAhead", "Content-Type": "text/html"}
+        gw._session = MagicMock()
+        gw._session.get = AsyncMock(return_value=mock_resp)
+
+        with patch(
+            "custom_components.salus.gateway.AesCbcProtocol",
+            return_value=new_proto,
+        ), patch(
+            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            return_value=not_impl,
+        ):
+            with pytest.raises(
+                IT600UnsupportedFirmwareError, match="Security1 handshake failed"
             ):
                 await gw.connect()
 

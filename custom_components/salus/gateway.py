@@ -146,6 +146,7 @@ class IT600Gateway:
         ]
 
         saw_reject = False
+        saw_new_protocol = False
         attempt_log: list[str] = []
 
         for proto in candidates:
@@ -163,13 +164,15 @@ class IT600Gateway:
                 break
             except NotImplementedError as exc:
                 _LOGGER.debug("Protocol %s: %s", proto.name, exc)
-                attempt_log.append(f"{proto.name}: not implemented")
+                attempt_log.append(f"{proto.name}: handshake failed ({exc})")
             except Exception as exc:
                 msg = str(exc)
                 _LOGGER.debug("Protocol %s failed: %s", proto.name, msg)
                 attempt_log.append(f"{proto.name}: {msg}")
                 if "reject frame" in msg.lower():
                     saw_reject = True
+                if "new-protocol frame" in msg.lower():
+                    saw_new_protocol = True
 
         # --- Extract gateway MAC ---
         if result is not None:
@@ -217,6 +220,7 @@ class IT600Gateway:
             f"Host: {self._host}:{self._port}",
             f"EUID: {euid_masked}",
             f"Reject frames seen: {saw_reject}",
+            f"New-protocol frames seen: {saw_new_protocol}",
         ]
         for entry in attempt_log:
             summary_lines.append(f"  • {entry}")
@@ -224,16 +228,16 @@ class IT600Gateway:
             summary_lines.append(f"Root probe: {probe_info}")
         summary_lines.append(
             "Please include everything above when reporting issues at "
-            "https://github.com/epoplavskis/homeassistant_salus/issues/81"
+            "https://github.com/leonardpitzu/homeassistant_salus/issues/3"
         )
         summary_lines.append("--- end diagnostic summary ---")
         _LOGGER.warning("\n".join(summary_lines))
 
-        if saw_reject:
+        if saw_reject or saw_new_protocol:
             raise IT600UnsupportedFirmwareError(
-                "Gateway reachable but returned reject frames — firmware "
-                "likely requires ECDH+AES-CCM (not yet implemented).  "
-                "See https://github.com/epoplavskis/homeassistant_salus/issues/81"
+                "Gateway reachable but Security1 handshake failed — "
+                "see the WARNING log above for full diagnostic report.  "
+                "See https://github.com/leonardpitzu/homeassistant_salus/issues/3"
             )
 
         raise IT600AuthenticationError(
