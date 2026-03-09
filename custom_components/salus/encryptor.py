@@ -1,5 +1,5 @@
-"""Backward-compatibility shim — real implementation lives in aes.py."""
+"""Backward-compatibility shim — real implementation lives in protocol_aes_cbc.py."""
 
-from .aes import IT600Encryptor
+from .protocol_aes_cbc import IT600Encryptor
 
 __all__ = ["IT600Encryptor"]

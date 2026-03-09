@@ -70,19 +70,37 @@ Data is polled every 30 seconds. All communication is local over your LAN.
 
 ## Encryption / firmware changes
 
-Salus gateways encrypt all local API traffic. Recent firmware updates (UG800, firmware ≥ 2025-07-15) changed the encryption protocol from AES-CBC to RC4. This integration auto-detects the protocol during connection, so no manual configuration is needed.
+Salus gateways encrypt all local API traffic. A recent firmware update has changed the encryption protocol entirely. The integration currently supports the legacy protocol; support for the new protocol is under investigation.
 
-|  | Legacy (AES-CBC) | New (RC4) |
+|  | Legacy (AES-CBC) | New firmware (under investigation) |
 |---|---|---|
 | **Affected gateways** | UGE600, older UG800 firmware | UG800 with firmware ≥ 2025-07-15 |
-| **Cipher** | AES-256-CBC (or AES-128-CBC) | RC4 stream cipher |
-| **Key derivation** | `MD5("Salus-{euid}")` — 16-byte hash used as-is (AES-128) or zero-padded to 32 bytes (AES-256) | `MD5(EUID_bytes + first_12_bytes_of_handshake_response)` — per-session key |
-| **IV** | Static, all zeros | N/A (stream cipher) |
-| **Padding** | PKCS7 | None |
-| **Session handshake** | None — key is static | Two-step: POST `/deviceid/read` → POST `/deviceid/write`, server returns a nonce used in key derivation |
-| **Framing** | Plain HTTP body (single block) | Binary frames with `0x16` (continuation) / `0x17` (final) header bytes |
+| **Cipher** | AES-256-CBC (or AES-128-CBC) | AES-CCM (authenticated encryption) |
+| **Key derivation** | `MD5("Salus-{euid}")` — static, derived from the gateway EUID | ECDH key exchange (`secp256r1`) → session key derivation |
+| **IV / nonce** | Static, all zeros | Per-message nonce (part of AES-CCM) |
+| **Padding** | PKCS7 | None (AES-CCM handles arbitrary lengths) |
+| **Session setup** | None — key is static | Multi-step handshake (`setup0Request` / `setup0Response`) exchanging device public keys and randoms |
+| **Framing** | Plain HTTP body | Encrypted core + variable-length trailer: `[prefix][sequence_byte][0xFD][check_hi][check_lo]` |
+| **Sequence tracking** | None | Incrementing sequence byte per request |
 
-If you are experiencing connection failures after a gateway firmware update, make sure you are running the latest version of this integration.
+### What we know so far
+
+- Sending a legacy AES-CBC encrypted payload to an updated gateway returns a **33-byte reject frame** (32 bytes of opaque data + 1-byte trailer `0xAE`). This is not an encrypted response — it is a status/rejection indicator.
+- The decryptable portion of any gateway response is the block-aligned prefix: `response[0 : len - (len % 16)]`. The remaining bytes form the trailer.
+- **Exact replay** of captured request frames from the official Salus Smart Home app succeeds — the gateway returns full encrypted responses. However, re-encrypting the same plaintext with the old AES-CBC key and appending the captured trailer is rejected, confirming the encryption key itself has changed.
+- Evidence from the Android APK references `secp256r1`, `cipherSecretKey`, `Device public key`, `Device random`, and `aes_ccm`, strongly indicating an **ECDH + AES-CCM** scheme.
+
+### Current status
+
+| What | Status |
+|---|---|
+| Legacy AES-CBC gateways | **Fully supported** |
+| Detecting new-firmware reject frame | **Working** — the integration recognises the 33-byte reject and logs it clearly |
+| New ECDH + AES-CCM handshake | **Not yet implemented** — reverse engineering in progress |
+| Replaying captured new-protocol frames | **Confirmed working** in research tooling |
+| Generating new valid encrypted requests | **Not yet possible** — key exchange flow still being reconstructed |
+
+If your gateway has received the new firmware and the integration can no longer connect, there is unfortunately no workaround yet. Progress is tracked in [issue #81](https://github.com/epoplavskis/homeassistant_salus/issues/81). Contributions and packet captures are welcome.
 
 ## Debugging
 
