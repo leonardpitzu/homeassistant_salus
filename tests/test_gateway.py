@@ -1861,3 +1861,235 @@ class TestSessionLifecycle:
             pass
 
         mock_session.close.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+#  Protocol auto-detection
+# ---------------------------------------------------------------------------
+
+_READALL_RESPONSE = {
+    "status": "success",
+    "id": [
+        {
+            "sGateway": {"NetworkLANMAC": "AA:BB:CC:DD:EE:FF"},
+            "data": {"UniID": "gw001"},
+        }
+    ],
+}
+
+
+class TestProtocolAutoDetect:
+    """Test that connect() cascades AES-256 → AES-128 → RC4."""
+
+    async def test_aes256_wins_on_first_try(self):
+        gw = _make_gateway()
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=_READALL_RESPONSE,
+        ) as mock_req:
+            mac = await gw.connect()
+
+        assert mac == "AA:BB:CC:DD:EE:FF"
+        assert gw._protocol == "aes256"
+        # Only one call — no fallback needed
+        assert mock_req.call_count == 1
+
+    async def test_aes128_fallback(self):
+        """AES-256 fails, AES-128 succeeds."""
+        gw = _make_gateway()
+        from custom_components.salus.exceptions import IT600CommandError
+
+        call_count = 0
+
+        async def _side_effect(command, body):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise IT600CommandError("bad padding")
+            return _READALL_RESPONSE
+
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock,
+            side_effect=_side_effect,
+        ):
+            mac = await gw.connect()
+
+        assert mac == "AA:BB:CC:DD:EE:FF"
+        assert gw._protocol == "aes128"
+
+    async def test_rc4_fallback(self):
+        """Both AES variants fail, RC4 handshake succeeds."""
+        gw = _make_gateway()
+        from custom_components.salus.exceptions import IT600CommandError
+
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock,
+            side_effect=IT600CommandError("decrypt fail"),
+        ), patch.object(
+            gw, "_rc4_connect",
+            new_callable=AsyncMock,
+            return_value=_READALL_RESPONSE,
+        ):
+            mac = await gw.connect()
+
+        assert mac == "AA:BB:CC:DD:EE:FF"
+        assert gw._protocol == "rc4"
+
+    async def test_all_fail_reachable_raises_auth_error(self):
+        """All protocols fail + host reachable → IT600AuthenticationError."""
+        gw = _make_gateway()
+        from custom_components.salus.exceptions import IT600CommandError
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=b"<html>GoAhead</html>")
+
+        gw._session = MagicMock()
+        gw._session.get = AsyncMock(return_value=mock_resp)
+
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock,
+            side_effect=IT600CommandError("fail"),
+        ), patch.object(
+            gw, "_rc4_connect",
+            new_callable=AsyncMock,
+            side_effect=IT600CommandError("fail"),
+        ):
+            with pytest.raises(IT600AuthenticationError):
+                await gw.connect()
+
+    async def test_all_fail_unreachable_raises_connection_error(self):
+        """All protocols fail + host unreachable → IT600ConnectionError."""
+        gw = _make_gateway()
+        from custom_components.salus.exceptions import IT600CommandError
+
+        gw._session = MagicMock()
+        gw._session.get = AsyncMock(
+            side_effect=OSError("Connection refused")
+        )
+
+        with patch.object(
+            gw, "_make_encrypted_request",
+            new_callable=AsyncMock,
+            side_effect=IT600CommandError("fail"),
+        ), patch.object(
+            gw, "_rc4_connect",
+            new_callable=AsyncMock,
+            side_effect=IT600CommandError("fail"),
+        ):
+            with pytest.raises(IT600ConnectionError):
+                await gw.connect()
+
+
+# ---------------------------------------------------------------------------
+#  _extract_gateway_mac
+# ---------------------------------------------------------------------------
+
+
+class TestExtractGatewayMac:
+    """Test MAC extraction from readall responses."""
+
+    def test_extracts_mac(self):
+        gw = _make_gateway()
+        result = {
+            "id": [
+                {"sGateway": {"NetworkLANMAC": "11:22:33:44:55:66"}},
+            ]
+        }
+        assert gw._extract_gateway_mac(result) == "11:22:33:44:55:66"
+
+    def test_no_gateway_returns_none(self):
+        gw = _make_gateway()
+        result = {"id": [{"data": {"UniID": "dev001"}}]}
+        assert gw._extract_gateway_mac(result) is None
+
+    def test_empty_id_returns_none(self):
+        gw = _make_gateway()
+        assert gw._extract_gateway_mac({"id": []}) is None
+
+    def test_missing_id_key_returns_none(self):
+        gw = _make_gateway()
+        assert gw._extract_gateway_mac({}) is None
+
+
+# ---------------------------------------------------------------------------
+#  _make_rc4_request
+# ---------------------------------------------------------------------------
+
+
+class TestMakeRC4Request:
+    """Test RC4-encrypted request/response flow."""
+
+    async def test_rc4_request_roundtrip(self):
+        """Verify _make_rc4_request encrypts, sends, decrypts."""
+        from custom_components.salus.rc4 import FRAME_FINAL, rc4_crypt
+
+        gw = _make_gateway()
+        gw._protocol = "rc4"
+        gw._rc4_session_key = b"0123456789abcdef"
+
+        response_json = b'{"status":"success","id":[]}'
+        encrypted_response = rc4_crypt(gw._rc4_session_key, response_json)
+        framed = encrypted_response + bytes([FRAME_FINAL])
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=framed)
+
+        gw._session = MagicMock()
+        gw._session.post = AsyncMock(return_value=mock_resp)
+
+        result = await gw._make_rc4_request("read", {"requestAttr": "readall"})
+
+        assert result["status"] == "success"
+        gw._session.post.assert_awaited_once()
+
+    async def test_rc4_request_no_session_key_raises(self):
+        from custom_components.salus.exceptions import IT600CommandError
+
+        gw = _make_gateway()
+        gw._protocol = "rc4"
+        gw._rc4_session_key = None
+
+        with pytest.raises(IT600CommandError, match="session not established"):
+            await gw._make_rc4_request("read", {"requestAttr": "readall"})
+
+    async def test_rc4_request_http_error_raises(self):
+        from custom_components.salus.exceptions import IT600CommandError
+        from custom_components.salus.rc4 import FRAME_FINAL
+
+        gw = _make_gateway()
+        gw._protocol = "rc4"
+        gw._rc4_session_key = b"0123456789abcdef"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 500
+        mock_resp.read = AsyncMock(return_value=b"error" + bytes([FRAME_FINAL]))
+
+        gw._session = MagicMock()
+        gw._session.post = AsyncMock(return_value=mock_resp)
+
+        with pytest.raises(IT600CommandError, match="HTTP 500"):
+            await gw._make_rc4_request("read", {"requestAttr": "readall"})
+
+    async def test_rc4_dispatch_from_make_encrypted_request(self):
+        """_make_encrypted_request dispatches to _make_rc4_request when protocol is rc4."""
+        gw = _make_gateway()
+        gw._protocol = "rc4"
+        expected = {"status": "success", "id": []}
+
+        with patch.object(
+            gw, "_make_rc4_request",
+            new_callable=AsyncMock,
+            return_value=expected,
+        ) as mock_rc4:
+            result = await gw._make_encrypted_request(
+                "read", {"requestAttr": "readall"}
+            )
+
+        assert result == expected
+        mock_rc4.assert_awaited_once_with("read", {"requestAttr": "readall"})

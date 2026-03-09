@@ -49,12 +49,13 @@ from .const import (
     THERMOSTAT_ERROR_CODES,
     WINDOW_VOLTAGE_MODELS,
 )
-from .encryptor import IT600Encryptor
+from .aes import IT600Encryptor
 from .exceptions import (
     IT600AuthenticationError,
     IT600CommandError,
     IT600ConnectionError,
 )
+from .rc4 import rc4_crypt, split_frames
 from .models import (
     BinarySensorDevice,
     ClimateDevice,
@@ -79,7 +80,10 @@ class IT600Gateway:
         session: aiohttp.ClientSession | None = None,
         debug: bool = False,
     ) -> None:
+        self._euid = euid
         self._encryptor = IT600Encryptor(euid)
+        self._protocol: str | None = None
+        self._rc4_session_key: bytes | None = None
         self._host = host
         self._port = port
         self._request_timeout = request_timeout
@@ -116,90 +120,343 @@ class IT600Gateway:
     # ------------------------------------------------------------------
 
     async def connect(self) -> str:
-        """Connect to the gateway and return its MAC address."""
-        _LOGGER.debug(
-            "Trying to connect to gateway at %s:%s (EUID fingerprint: %s)",
-            self._host,
-            self._port,
-            hashlib.md5(self._encryptor._cipher.algorithm.key).hexdigest()[:8],
-        )
+        """Connect to the gateway and return its MAC address.
+
+        Tries AES-256 (original firmware), then AES-128, then the RC4
+        handshake protocol introduced in firmware >= 20250715.  Stores
+        the winning protocol so all subsequent requests use it.
+        """
+        _LOGGER.debug("Connecting to %s:%s", self._host, self._port)
 
         if self._session is None:
             self._session = aiohttp.ClientSession()
             self._close_session = True
 
-        try:
-            all_devices = await self._make_encrypted_request(
-                "read", {"requestAttr": "readall"}
-            )
+        result = None
 
+        # --- Try AES variants (old / intermediate firmware) ---
+        for label, encryptor in (
+            ("AES-256", IT600Encryptor(self._euid)),
+            ("AES-128", IT600Encryptor(self._euid, aes128=True)),
+        ):
+            self._encryptor = encryptor
             _LOGGER.debug(
-                "Gateway returned %d top-level keys: %s",
-                len(all_devices),
-                list(all_devices.keys()),
+                "Trying %s (key fingerprint: %s)",
+                label,
+                hashlib.md5(
+                    encryptor._cipher.algorithm.key
+                ).hexdigest()[:8],
             )
-
-            device_list = all_devices.get("id", [])
-            _LOGGER.debug(
-                "Gateway returned %d device entries; first-level keys per "
-                "entry: %s",
-                len(device_list),
-                [list(d.keys()) for d in device_list[:5]],
-            )
-
-            gateway = next(
-                (
-                    x
-                    for x in device_list
-                    if x.get("sGateway", {}).get("NetworkLANMAC", "")
-                ),
-                None,
-            )
-
-            if gateway is None:
-                raise IT600CommandError(
-                    "Gateway response did not contain gateway information"
+            try:
+                result = await self._make_encrypted_request(
+                    "read", {"requestAttr": "readall"}
                 )
+                self._protocol = label.lower().replace("-", "")
+                _LOGGER.debug("Protocol %s: decryption succeeded", label)
+                break
+            except IT600CommandError as exc:
+                _LOGGER.debug("Protocol %s failed: %s", label, exc)
 
-            mac = gateway["sGateway"]["NetworkLANMAC"]
-            _LOGGER.debug("Gateway MAC: %s", mac)
-            return mac
+        # --- Try RC4 handshake (new firmware >= 20250715) ---
+        if result is None:
+            _LOGGER.debug("AES protocols failed — trying RC4 handshake")
+            try:
+                result = await self._rc4_connect()
+                self._protocol = "rc4"
+                _LOGGER.debug("Protocol RC4: handshake succeeded")
+            except (IT600CommandError, IT600ConnectionError) as exc:
+                _LOGGER.debug("Protocol RC4 failed: %s", exc)
 
-        except (IT600ConnectionError, IT600CommandError) as exc:
+        # --- Extract gateway MAC ---
+        if result is not None:
+            mac = self._extract_gateway_mac(result)
+            if mac is not None:
+                _LOGGER.debug(
+                    "Connected using %s, MAC: %s", self._protocol, mac
+                )
+                return mac
+
+        # --- All protocols failed — distinguish host vs EUID ---
+        _LOGGER.debug("All protocols failed — probing reachability")
+        try:
+            async with asyncio.timeout(self._request_timeout):
+                probe = await self._session.get(
+                    f"http://{self._host}:{self._port}/"
+                )
+                probe_body = await probe.read()
+                _LOGGER.debug(
+                    "Probe: HTTP %s, %d bytes: %.200s",
+                    probe.status,
+                    len(probe_body),
+                    probe_body.decode(errors="replace"),
+                )
+        except Exception as exc:
+            raise IT600ConnectionError(
+                "Cannot reach iT600 gateway — check host / IP address"
+            ) from exc
+
+        raise IT600AuthenticationError(
+            "Gateway reachable but authentication failed — check EUID"
+        )
+
+    # ------------------------------------------------------------------
+    #  Protocol helpers
+    # ------------------------------------------------------------------
+
+    def _extract_gateway_mac(self, result: dict) -> str | None:
+        """Return the gateway MAC from a readall response, or None."""
+        devices = result.get("id", [])
+        gateway = next(
+            (
+                x
+                for x in devices
+                if x.get("sGateway", {}).get("NetworkLANMAC", "")
+            ),
+            None,
+        )
+        if gateway is None:
+            _LOGGER.debug("No gateway info in %d device entries", len(devices))
+            return None
+        return gateway["sGateway"]["NetworkLANMAC"]
+
+    async def _rc4_connect(self) -> dict:
+        """Attempt the RC4 handshake protocol (new firmware >= 20250715).
+
+        Probes multiple HS1 payload formats and logs every response so a
+        single test run captures everything needed to refine the protocol.
+        """
+        url_read = f"http://{self._host}:{self._port}/deviceid/read"
+        url_write = f"http://{self._host}:{self._port}/deviceid/write"
+        readall_json = json.dumps({"requestAttr": "readall"})
+        aes128 = IT600Encryptor(self._euid, aes128=True)
+
+        # Try several HS1 payload formats (best guesses; logs reveal the
+        # correct one).
+        probes = [
+            ("AES-128", aes128.encrypt(readall_json)),
+            ("AES-128+0x17", aes128.encrypt(readall_json) + b"\x17"),
+            ("plaintext", readall_json.encode()),
+            ("plaintext+0x17", readall_json.encode() + b"\x17"),
+        ]
+
+        hs1_raw: bytes | None = None
+        hs1_label: str | None = None
+
+        for label, payload in probes:
             _LOGGER.debug(
-                "Connect failed with %s: %s — probing gateway with plain GET",
-                type(exc).__name__,
-                exc,
+                "[RC4-HS1] Trying %s (%d bytes)", label, len(payload)
             )
-            # Distinguish bad host from bad EUID: if a plain GET succeeds the
-            # host is reachable but the EUID must be wrong.
             try:
                 async with asyncio.timeout(self._request_timeout):
-                    probe = await self._session.get(
-                        f"http://{self._host}:{self._port}/"
+                    resp = await self._session.post(
+                        url_read,
+                        data=payload,
+                        headers={"content-type": "application/json"},
                     )
-                    probe_body = await probe.read()
-                    _LOGGER.debug(
-                        "Plain GET probe: HTTP %s, content-type=%s, "
-                        "body length=%d, body (first 200 bytes): %s",
-                        probe.status,
-                        probe.headers.get("Content-Type", "<missing>"),
-                        len(probe_body),
-                        probe_body[:200].decode(errors="replace"),
-                    )
-            except Exception as probe_exc:
-                _LOGGER.debug(
-                    "Plain GET probe failed: %s: %s",
-                    type(probe_exc).__name__,
-                    probe_exc,
-                )
-                raise IT600ConnectionError(
-                    "Cannot reach iT600 gateway — check host / IP address"
-                ) from exc
+                    raw = await resp.read()
 
-            raise IT600AuthenticationError(
-                "Gateway reachable but authentication failed — check EUID"
-            ) from exc
+                _LOGGER.debug(
+                    "[RC4-HS1] %s: HTTP %s, %d bytes, ct=%s, hex=%s",
+                    label,
+                    resp.status,
+                    len(raw),
+                    resp.headers.get("Content-Type", "-"),
+                    raw.hex() if len(raw) <= 256 else
+                    f"{raw[:64].hex()}...{raw[-16:].hex()} ({len(raw)}B)",
+                )
+
+                # A large response (> 64 bytes) likely means the gateway
+                # understood our request and returned device data.
+                if resp.status == 200 and len(raw) > 64:
+                    hs1_raw = raw
+                    hs1_label = label
+                    break
+            except Exception as exc:
+                _LOGGER.debug("[RC4-HS1] %s failed: %s", label, exc)
+
+        if hs1_raw is None:
+            raise IT600CommandError(
+                "RC4 handshake: no HS1 format produced a usable response"
+            )
+
+        # --- Parse HS1 frames ---
+        frames = split_frames(hs1_raw)
+        _LOGGER.debug(
+            "[RC4-HS1] %d frames from %dB (format: %s)",
+            len(frames), len(hs1_raw), hs1_label,
+        )
+
+        # Try to AES-128 decrypt the combined frame data
+        frame_data = b"".join(frames)
+        hs1_json: dict | None = None
+        if len(frame_data) >= 16 and len(frame_data) % 16 == 0:
+            try:
+                text = aes128.decrypt(frame_data)
+                hs1_json = json.loads(text)
+                _LOGGER.debug("[RC4-HS1] AES-128 decrypted: %.500s", text)
+            except Exception as exc:
+                _LOGGER.debug(
+                    "[RC4-HS1] AES-128 combined decrypt failed: %s", exc
+                )
+
+        # Per-frame AES-128 decrypt fallback
+        if hs1_json is None:
+            parts: list[str] = []
+            for idx, frame in enumerate(frames[:5]):
+                _LOGGER.debug(
+                    "[RC4-HS1] Frame %d: %dB, hex=%.128s",
+                    idx, len(frame), frame.hex(),
+                )
+                if len(frame) >= 16 and len(frame) % 16 == 0:
+                    try:
+                        parts.append(aes128.decrypt(frame))
+                        _LOGGER.debug(
+                            "[RC4-HS1] Frame %d ok: %.200s", idx, parts[-1]
+                        )
+                    except Exception as exc:
+                        _LOGGER.debug(
+                            "[RC4-HS1] Frame %d decrypt fail: %s", idx, exc
+                        )
+            if parts:
+                try:
+                    hs1_json = json.loads("".join(parts))
+                except json.JSONDecodeError:
+                    _LOGGER.debug(
+                        "[RC4-HS1] Combined decrypted frames not valid JSON"
+                    )
+
+        # --- HS2: session establishment ---
+        _LOGGER.debug("[RC4-HS2] Sending handshake step 2 to %s", url_write)
+        hs2_payload = aes128.encrypt(
+            json.dumps({"requestAttr": "write"})
+        )
+        hs2_raw: bytes | None = None
+        try:
+            async with asyncio.timeout(self._request_timeout):
+                resp = await self._session.post(
+                    url_write,
+                    data=hs2_payload,
+                    headers={"content-type": "application/json"},
+                )
+                hs2_raw = await resp.read()
+
+            _LOGGER.debug(
+                "[RC4-HS2] HTTP %s, %d bytes, hex=%s",
+                resp.status,
+                len(hs2_raw),
+                hs2_raw.hex() if len(hs2_raw) <= 256 else
+                f"{hs2_raw[:64].hex()}... ({len(hs2_raw)}B)",
+            )
+        except Exception as exc:
+            _LOGGER.debug("[RC4-HS2] Failed: %s", exc)
+
+        # --- Derive RC4 session key ---
+        if hs2_raw is not None and len(hs2_raw) >= 12:
+            hs2_data = hs2_raw
+            if hs2_data and hs2_data[-1] in (0x16, 0x17):
+                hs2_data = hs2_data[:-1]
+
+            first_12 = hs2_data[:12]
+            self._rc4_session_key = hashlib.md5(
+                self._euid.lower().encode() + first_12
+            ).digest()
+            _LOGGER.debug(
+                "[RC4] Session key derived (nonce=%s, key fp=%s)",
+                first_12.hex(),
+                hashlib.md5(self._rc4_session_key).hexdigest()[:8],
+            )
+            self._encryptor = aes128
+        else:
+            _LOGGER.debug(
+                "[RC4-HS2] Response too short for key derivation (%d bytes)",
+                len(hs2_raw) if hs2_raw else 0,
+            )
+
+        if hs1_json is not None and hs1_json.get("status") == "success":
+            return hs1_json
+
+        raise IT600CommandError(
+            "RC4 handshake completed but failed to obtain valid device data. "
+            "Check debug logs for protocol details."
+        )
+
+    async def _make_rc4_request(
+        self, command: str, request_body: dict[str, Any]
+    ) -> Any:
+        """Send an RC4-encrypted request (post-handshake)."""
+        async with self._lock:
+            if self._rc4_session_key is None:
+                raise IT600CommandError("RC4 session not established")
+
+            url = f"http://{self._host}:{self._port}/deviceid/{command}"
+            body_json = json.dumps(request_body)
+            encrypted = rc4_crypt(
+                self._rc4_session_key, body_json.encode()
+            )
+
+            _LOGGER.debug(
+                "[RC4] POST %s (%d->%d bytes)",
+                url, len(body_json), len(encrypted),
+            )
+
+            try:
+                async with asyncio.timeout(self._request_timeout):
+                    resp = await self._session.post(
+                        url,
+                        data=encrypted,
+                        headers={"content-type": "application/json"},
+                    )
+                    raw = await resp.read()
+
+                    _LOGGER.debug(
+                        "[RC4] Response: HTTP %s, %d bytes",
+                        resp.status, len(raw),
+                    )
+
+                    if resp.status != 200:
+                        raise IT600CommandError(
+                            f"Gateway returned HTTP {resp.status}"
+                        )
+
+                    frames = split_frames(raw)
+                    frame_data = b"".join(frames)
+
+                    decrypted = rc4_crypt(
+                        self._rc4_session_key, frame_data
+                    )
+                    text = decrypted.decode(errors="replace")
+                    _LOGGER.debug("[RC4] Decrypted: %.500s", text)
+
+                    result = json.loads(text)
+
+                    if result.get("status") != "success":
+                        raise IT600CommandError(
+                            f"Gateway rejected '{command}'"
+                        )
+
+                    return result
+
+            except TimeoutError as exc:
+                raise IT600ConnectionError(
+                    "Timeout communicating with iT600 gateway"
+                ) from exc
+            except client_exceptions.ClientConnectorError as exc:
+                raise IT600ConnectionError(
+                    "Cannot reach iT600 gateway"
+                ) from exc
+            except (
+                IT600CommandError, IT600ConnectionError,
+                IT600AuthenticationError,
+            ):
+                raise
+            except Exception as exc:
+                _LOGGER.error(
+                    "[RC4] Unexpected: %s / %s",
+                    type(exc).__name__, exc, exc_info=True,
+                )
+                raise IT600CommandError(
+                    "RC4 request failed"
+                ) from exc
 
     # ------------------------------------------------------------------
     #  Polling
@@ -1427,6 +1684,9 @@ class IT600Gateway:
     async def _make_encrypted_request(
         self, command: str, request_body: dict[str, Any]
     ) -> Any:
+        if self._protocol == "rc4":
+            return await self._make_rc4_request(command, request_body)
+
         async with self._lock:
             if self._session is None:
                 self._session = aiohttp.ClientSession()
