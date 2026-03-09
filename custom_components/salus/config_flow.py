@@ -10,7 +10,11 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_HOST, CONF_NAME, CONF_TOKEN
 
 from .const import DOMAIN
-from .exceptions import IT600AuthenticationError, IT600ConnectionError
+from .exceptions import (
+    IT600AuthenticationError,
+    IT600CommandError,
+    IT600ConnectionError,
+)
 from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,6 +64,8 @@ class SalusFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "connect_error"
             except IT600AuthenticationError:
                 errors["base"] = "auth_error"
+            except IT600CommandError:
+                errors["base"] = "connect_error"
             finally:
                 await gateway.close()
 

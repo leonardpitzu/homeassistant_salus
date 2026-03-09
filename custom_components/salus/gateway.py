@@ -1416,18 +1416,26 @@ class IT600Gateway:
                             f"Gateway returned HTTP {resp.status}"
                         )
 
-                    if len(raw) % 16 != 0:
-                        _LOGGER.error(
+                    remainder = len(raw) % 16
+                    if remainder != 0:
+                        aligned = len(raw) - remainder
+                        if aligned < 16:
+                            _LOGGER.error(
+                                "Gateway response too short to be "
+                                "encrypted (%d bytes)",
+                                len(raw),
+                            )
+                            raise IT600CommandError(
+                                "Gateway returned an unencrypted or "
+                                f"malformed response ({len(raw)} bytes)"
+                            )
+                        _LOGGER.debug(
                             "Gateway response is not block-aligned "
-                            "(%d bytes — not a multiple of 16). "
-                            "Plain-text body: %s",
+                            "(%d bytes); trimming %d trailing byte(s)",
                             len(raw),
-                            raw.decode(errors="replace"),
+                            remainder,
                         )
-                        raise IT600CommandError(
-                            "Gateway returned an unencrypted or malformed response "
-                            f"({len(raw)} bytes)"
-                        )
+                        raw = raw[:aligned]
 
                     decrypted = self._encryptor.decrypt(raw)
 
