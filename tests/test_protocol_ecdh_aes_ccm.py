@@ -266,25 +266,48 @@ class TestWrapUnwrap:
 
 
 class TestConnect:
-    """Test that connect() properly signals it is not implemented."""
+    """Test that connect() runs probes and signals not-implemented."""
+
+    @staticmethod
+    def _mock_session():
+        """Return a mock session whose .post() returns a plausible response."""
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=bytes(33))
+        mock_resp.headers = {"Server": "GoAhead", "Content-Type": "application/octet-stream"}
+
+        mock_session = AsyncMock()
+        mock_session.post = AsyncMock(return_value=mock_resp)
+        mock_session.get = AsyncMock(return_value=mock_resp)
+        return mock_session
 
     async def test_connect_raises_not_implemented(self):
         proto = EcdhAesCcmProtocol("001E5E0D32906128")
-        mock_session = AsyncMock()
+        session = self._mock_session()
 
         with pytest.raises(NotImplementedError, match="not yet implemented"):
-            await proto.connect(mock_session, "192.168.1.1", 80, 5)
+            await proto.connect(session, "192.168.1.1", 80, 5)
 
     async def test_connect_generates_keypair(self):
         """connect() should at least generate the key pair before failing."""
         proto = EcdhAesCcmProtocol("001E5E0D32906128")
-        mock_session = AsyncMock()
+        session = self._mock_session()
 
         with pytest.raises(NotImplementedError):
-            await proto.connect(mock_session, "192.168.1.1", 80, 5)
+            await proto.connect(session, "192.168.1.1", 80, 5)
 
-        # Even though it raised, the key pair should have been generated
         assert proto._private_key is not None
+
+    async def test_connect_sends_probes(self):
+        """connect() should POST diagnostic probes before raising."""
+        proto = EcdhAesCcmProtocol("001E5E0D32906128")
+        session = self._mock_session()
+
+        with pytest.raises(NotImplementedError):
+            await proto.connect(session, "192.168.1.1", 80, 5)
+
+        # Should have sent 3 probe POSTs
+        assert session.post.call_count == 3
 
 
 # ---------------------------------------------------------------------------

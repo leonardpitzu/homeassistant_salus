@@ -22,6 +22,7 @@ STATUS: **Skeleton** — the protocol is not yet fully reverse-engineered.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import logging
 import os
@@ -42,7 +43,12 @@ from cryptography.hazmat.primitives.serialization import (
     PublicFormat,
 )
 
-from .protocol import GatewayProtocol
+from .protocol import (
+    REJECT_FRAME_LENGTH,
+    REJECT_TRAILER,
+    GatewayProtocol,
+    is_reject_frame as _is_reject_frame,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -67,10 +73,9 @@ class EcdhAesCcmProtocol(GatewayProtocol):
 
     name = "ECDH+AES-CCM"
 
-    # reject-frame signature returned by new-firmware gateways when they
-    # receive an AES-CBC request they cannot process.
-    REJECT_FRAME_LENGTH = 33
-    REJECT_TRAILER = 0xAE
+    # Expose module-level constants as class attributes for convenience.
+    REJECT_FRAME_LENGTH = REJECT_FRAME_LENGTH
+    REJECT_TRAILER = REJECT_TRAILER
 
     def __init__(self, euid: str) -> None:
         self._euid = euid
@@ -118,13 +123,9 @@ class EcdhAesCcmProtocol(GatewayProtocol):
     def is_reject_frame(raw: bytes) -> bool:
         """Return True if *raw* looks like a new-firmware reject frame.
 
-        Reject frames are exactly 33 bytes: 32 bytes of opaque data +
-        a single ``0xAE`` trailer byte.
+        Delegates to :func:`protocol.is_reject_frame`.
         """
-        return (
-            len(raw) == EcdhAesCcmProtocol.REJECT_FRAME_LENGTH
-            and raw[-1] == EcdhAesCcmProtocol.REJECT_TRAILER
-        )
+        return _is_reject_frame(raw)
 
     @staticmethod
     def strip_trailer(raw: bytes) -> tuple[bytes, bytes]:
@@ -209,7 +210,8 @@ class EcdhAesCcmProtocol(GatewayProtocol):
             7. Receive and decrypt the response.
         """
         _LOGGER.debug(
-            "[%s] Handshake with %s:%d — not yet implemented",
+            "[%s] Handshake with %s:%d — not yet implemented, "
+            "running diagnostic probes",
             self.name, host, port,
         )
 
@@ -217,12 +219,64 @@ class EcdhAesCcmProtocol(GatewayProtocol):
         self._generate_keypair()
         our_pub = self.get_public_key_bytes()
         _LOGGER.debug(
-            "[%s] Generated ephemeral public key (%d bytes)",
-            self.name, len(our_pub),
+            "[%s] Generated ephemeral public key (%d bytes): %s",
+            self.name, len(our_pub), our_pub.hex(),
         )
 
-        # Steps 2-7 — TODO: implement setup0Request/setup0Response exchange
-        # once the exact framing is known.
+        # --- Diagnostic probes -------------------------------------------
+        # We can't complete the handshake yet, but we CAN poke the gateway
+        # with a few payloads and log what comes back.  This data is
+        # invaluable for anyone reverse-engineering the protocol.
+        base = f"http://{host}:{port}"
+        probes = [
+            # (label, method, url, body)
+            ("raw public key POST",
+             "POST", f"{base}/deviceid/read", our_pub),
+            ("empty POST",
+             "POST", f"{base}/deviceid/read", b""),
+            ("plaintext JSON POST",
+             "POST", f"{base}/deviceid/read",
+             b'{"requestAttr":"readall"}'),
+        ]
+
+        for label, method, url, body in probes:
+            try:
+                async with asyncio.timeout(timeout):
+                    if method == "POST":
+                        resp = await session.post(
+                            url, data=body,
+                            headers={"content-type": "application/json"},
+                        )
+                    else:
+                        resp = await session.get(url)
+                    raw = await resp.read()
+                _LOGGER.debug(
+                    "[%s] Probe '%s' → HTTP %d, %d bytes, "
+                    "reject=%s, hex=%s",
+                    self.name, label, resp.status, len(raw),
+                    _is_reject_frame(raw),
+                    raw.hex() if len(raw) <= 512
+                    else f"{raw[:256].hex()}...({len(raw)} total)",
+                )
+                # Log response headers — Content-Type and Server can
+                # reveal firmware version / web-server identity.
+                interesting = {
+                    k: v for k, v in resp.headers.items()
+                    if k.lower() in (
+                        "server", "content-type", "x-powered-by",
+                        "www-authenticate",
+                    )
+                }
+                if interesting:
+                    _LOGGER.debug(
+                        "[%s] Probe '%s' headers: %s",
+                        self.name, label, interesting,
+                    )
+            except Exception as exc:
+                _LOGGER.debug(
+                    "[%s] Probe '%s' failed: %s", self.name, label, exc,
+                )
+
         raise NotImplementedError(
             "ECDH+AES-CCM handshake is not yet implemented.  "
             "The exact byte-level protocol is still being reverse-engineered.  "

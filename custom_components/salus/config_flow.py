@@ -14,6 +14,7 @@ from .exceptions import (
     IT600AuthenticationError,
     IT600CommandError,
     IT600ConnectionError,
+    IT600UnsupportedFirmwareError,
 )
 from .gateway import IT600Gateway
 
@@ -64,6 +65,8 @@ class SalusFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
                 errors["base"] = "connect_error"
             except IT600AuthenticationError:
                 errors["base"] = "auth_error"
+            except IT600UnsupportedFirmwareError:
+                errors["base"] = "unsupported_firmware"
             except IT600CommandError:
                 errors["base"] = "connect_error"
             finally:

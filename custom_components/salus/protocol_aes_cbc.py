@@ -26,7 +26,7 @@ import aiohttp
 from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
-from .protocol import GatewayProtocol
+from .protocol import GatewayProtocol, is_reject_frame
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -116,6 +116,19 @@ class AesCbcProtocol(GatewayProtocol):
 
         if resp.status != 200:
             raise ValueError(f"HTTP {resp.status}")
+
+        # Detect new-firmware reject frame before attempting decryption.
+        if is_reject_frame(raw):
+            core = raw[:32]
+            _LOGGER.debug(
+                "[%s] Reject frame detected: %d bytes, "
+                "core=%s, trailer=0x%02X",
+                self.name, len(raw), core.hex(), raw[-1],
+            )
+            raise ValueError(
+                "Gateway returned a reject frame (33 bytes, 0xAE trailer) — "
+                "firmware likely requires a newer protocol (ECDH+AES-CCM)"
+            )
 
         text = self.unwrap_response(raw)
         result = json.loads(text)

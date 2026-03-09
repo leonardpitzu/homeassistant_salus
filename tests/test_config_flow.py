@@ -13,6 +13,7 @@ from custom_components.salus.const import DOMAIN
 from custom_components.salus.exceptions import (
     IT600AuthenticationError,
     IT600ConnectionError,
+    IT600UnsupportedFirmwareError,
 )
 
 GATEWAY_PATCH = "custom_components.salus.config_flow.IT600Gateway"
@@ -110,6 +111,33 @@ async def test_user_flow_auth_error(hass: HomeAssistant) -> None:
 
     assert result["type"] is FlowResultType.FORM
     assert result["errors"] == {"base": "auth_error"}
+
+
+async def test_user_flow_unsupported_firmware(hass: HomeAssistant) -> None:
+    """Test config flow when gateway has new unsupported firmware."""
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+
+    with patch(GATEWAY_PATCH) as mock_gw_cls:
+        mock_gw = AsyncMock()
+        mock_gw.connect = AsyncMock(
+            side_effect=IT600UnsupportedFirmwareError("reject frames")
+        )
+        mock_gw.close = AsyncMock()
+        mock_gw_cls.return_value = mock_gw
+
+        result = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {
+                CONF_HOST: "192.168.1.100",
+                CONF_TOKEN: "001E5E0D32906128",
+                CONF_NAME: "My Gateway",
+            },
+        )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "unsupported_firmware"}
 
 
 async def test_user_flow_already_configured(hass: HomeAssistant) -> None:

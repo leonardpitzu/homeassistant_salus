@@ -17,3 +17,7 @@ class IT600CommandError(IT600Error):
 
 class IT600ConnectionError(IT600Error):
     """Salus iT600 connection exception (unreachable gateway)."""
+
+
+class IT600UnsupportedFirmwareError(IT600Error):
+    """Gateway firmware requires a protocol not yet implemented."""

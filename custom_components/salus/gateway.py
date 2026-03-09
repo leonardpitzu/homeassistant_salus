@@ -52,6 +52,7 @@ from .exceptions import (
     IT600AuthenticationError,
     IT600CommandError,
     IT600ConnectionError,
+    IT600UnsupportedFirmwareError,
 )
 from .protocol import GatewayProtocol
 from .protocol_aes_cbc import AesCbcProtocol
@@ -126,7 +127,11 @@ class IT600Gateway:
         ECDH+AES-CCM).  Stores the winning protocol so all subsequent
         requests use it.
         """
-        _LOGGER.debug("Connecting to %s:%s", self._host, self._port)
+        euid_masked = self._euid[:4] + "…" + self._euid[-4:]
+        _LOGGER.debug(
+            "Connecting to %s:%s (EUID %s)", self._host, self._port,
+            euid_masked,
+        )
 
         if self._session is None:
             self._session = aiohttp.ClientSession()
@@ -140,6 +145,9 @@ class IT600Gateway:
             EcdhAesCcmProtocol(self._euid),
         ]
 
+        saw_reject = False
+        attempt_log: list[str] = []
+
         for proto in candidates:
             _LOGGER.debug("Trying %s", proto.name)
             try:
@@ -151,11 +159,17 @@ class IT600Gateway:
                 )
                 self._protocol = proto
                 _LOGGER.debug("Protocol %s: success", proto.name)
+                attempt_log.append(f"{proto.name}: success")
                 break
             except NotImplementedError as exc:
                 _LOGGER.debug("Protocol %s: %s", proto.name, exc)
+                attempt_log.append(f"{proto.name}: not implemented")
             except Exception as exc:
-                _LOGGER.debug("Protocol %s failed: %s", proto.name, exc)
+                msg = str(exc)
+                _LOGGER.debug("Protocol %s failed: %s", proto.name, msg)
+                attempt_log.append(f"{proto.name}: {msg}")
+                if "reject frame" in msg.lower():
+                    saw_reject = True
 
         # --- Extract gateway MAC ---
         if result is not None:
@@ -167,24 +181,60 @@ class IT600Gateway:
                 )
                 return mac
 
-        # --- All protocols failed — distinguish host vs EUID ---
-        _LOGGER.debug("All protocols failed — probing reachability")
+        # --- All protocols failed — run diagnostics --------------------
+        _LOGGER.debug("All protocols failed — running diagnostics")
+
+        # Probe root URL for reachability + server identity
+        probe_info: str | None = None
         try:
             async with asyncio.timeout(self._request_timeout):
                 probe = await self._session.get(
                     f"http://{self._host}:{self._port}/"
                 )
                 probe_body = await probe.read()
-                _LOGGER.debug(
-                    "Probe: HTTP %s, %d bytes: %.200s",
-                    probe.status,
-                    len(probe_body),
-                    probe_body.decode(errors="replace"),
+                headers = {
+                    k: v for k, v in probe.headers.items()
+                    if k.lower() in (
+                        "server", "content-type", "x-powered-by",
+                        "www-authenticate",
+                    )
+                }
+                probe_info = (
+                    f"HTTP {probe.status}, {len(probe_body)} bytes, "
+                    f"headers={headers}, "
+                    f"body={probe_body[:200].decode(errors='replace')!r}"
                 )
+                _LOGGER.debug("Probe /: %s", probe_info)
         except Exception as exc:
+            _LOGGER.debug("Probe / failed: %s", exc)
             raise IT600ConnectionError(
                 "Cannot reach iT600 gateway — check host / IP address"
             ) from exc
+
+        # --- Diagnostic summary (single block a user can copy-paste) ---
+        summary_lines = [
+            "--- Salus gateway diagnostic summary ---",
+            f"Host: {self._host}:{self._port}",
+            f"EUID: {euid_masked}",
+            f"Reject frames seen: {saw_reject}",
+        ]
+        for entry in attempt_log:
+            summary_lines.append(f"  • {entry}")
+        if probe_info:
+            summary_lines.append(f"Root probe: {probe_info}")
+        summary_lines.append(
+            "Please include everything above when reporting issues at "
+            "https://github.com/epoplavskis/homeassistant_salus/issues/81"
+        )
+        summary_lines.append("--- end diagnostic summary ---")
+        _LOGGER.warning("\n".join(summary_lines))
+
+        if saw_reject:
+            raise IT600UnsupportedFirmwareError(
+                "Gateway reachable but returned reject frames — firmware "
+                "likely requires ECDH+AES-CCM (not yet implemented).  "
+                "See https://github.com/epoplavskis/homeassistant_salus/issues/81"
+            )
 
         raise IT600AuthenticationError(
             "Gateway reachable but authentication failed — check EUID"

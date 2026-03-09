@@ -14,7 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .config_flow import CONF_FLOW_TYPE, CONF_USER
 from .const import DOMAIN
-from .exceptions import IT600AuthenticationError, IT600ConnectionError
+from .exceptions import IT600AuthenticationError, IT600ConnectionError, IT600UnsupportedFirmwareError
 from .gateway import IT600Gateway
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,6 +78,12 @@ async def async_setup_gateway_entry(
         _LOGGER.error(
             "Authentication error: check if you have specified "
             "gateway's EUID correctly."
+        )
+        return False
+    except IT600UnsupportedFirmwareError:
+        _LOGGER.error(
+            "Gateway firmware uses a new encryption protocol not yet supported. "
+            "See https://github.com/epoplavskis/homeassistant_salus/issues/81"
         )
         return False
 

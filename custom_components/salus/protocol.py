@@ -11,6 +11,23 @@ from typing import Any
 
 import aiohttp
 
+# ---------------------------------------------------------------------------
+#  Reject-frame detection
+# ---------------------------------------------------------------------------
+
+REJECT_FRAME_LENGTH = 33
+REJECT_TRAILER = 0xAE
+
+
+def is_reject_frame(raw: bytes) -> bool:
+    """Return True if *raw* is a new-firmware reject frame.
+
+    New-firmware gateways reply with exactly 33\xa0bytes (32\xa0opaque +
+    a trailing ``0xAE``) when they receive a request encrypted with a
+    protocol they no longer support.
+    """
+    return len(raw) == REJECT_FRAME_LENGTH and raw[-1] == REJECT_TRAILER
+
 
 class GatewayProtocol(abc.ABC):
     """Contract that every Salus gateway encryption protocol must fulfil."""

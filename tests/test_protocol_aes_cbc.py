@@ -247,10 +247,10 @@ class TestAesCbcConnect:
             await proto.connect(mock_session, "192.168.1.1", 80, 5)
 
     async def test_connect_with_trailer(self):
-        """Gateway appending a trailer byte should still work."""
+        """Gateway appending a non-0xAE trailer byte should still work."""
         proto = AesCbcProtocol(self.EUID)
         response_json = {"status": "success", "id": []}
-        raw = proto.encrypt(json.dumps(response_json)) + b"\xAE"
+        raw = proto.encrypt(json.dumps(response_json)) + b"\x01"
 
         mock_resp = AsyncMock()
         mock_resp.status = 200
@@ -261,6 +261,40 @@ class TestAesCbcConnect:
 
         result = await proto.connect(mock_session, "192.168.1.1", 80, 5)
         assert result["status"] == "success"
+
+    async def test_connect_reject_frame_raises(self):
+        """33-byte 0xAE response should raise with reject-frame message."""
+        proto = AesCbcProtocol(self.EUID)
+        reject = bytes(32) + b"\xAE"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=reject)
+
+        mock_session = AsyncMock()
+        mock_session.post.return_value = mock_resp
+
+        with pytest.raises(ValueError, match="reject frame"):
+            await proto.connect(mock_session, "192.168.1.1", 80, 5)
+
+    async def test_connect_reject_real_world(self):
+        """Real-world 33-byte reject from debug logs."""
+        proto = AesCbcProtocol(self.EUID)
+        reject = bytes.fromhex(
+            "8b4108b7dcf1ed6bc03180fa566eb857"
+            "40db686c8dc55a95b8bd72be640888fd"
+            "ae"
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=reject)
+
+        mock_session = AsyncMock()
+        mock_session.post.return_value = mock_resp
+
+        with pytest.raises(ValueError, match="reject frame"):
+            await proto.connect(mock_session, "192.168.1.1", 80, 5)
 
 
 # ---------------------------------------------------------------------------

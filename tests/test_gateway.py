@@ -33,6 +33,7 @@ from custom_components.salus.const import (
 from custom_components.salus.exceptions import (
     IT600AuthenticationError,
     IT600ConnectionError,
+    IT600UnsupportedFirmwareError,
 )
 from custom_components.salus.gateway import IT600Gateway
 
@@ -189,6 +190,7 @@ class TestConnect:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.read = AsyncMock(return_value=b"<html>GoAhead</html>")
+        mock_resp.headers = {"Server": "GoAhead", "Content-Type": "text/html"}
         gw._session = MagicMock()
         gw._session.get = AsyncMock(return_value=mock_resp)
 
@@ -1994,6 +1996,7 @@ class TestProtocolAutoDetect:
         mock_resp = AsyncMock()
         mock_resp.status = 200
         mock_resp.read = AsyncMock(return_value=b"<html>GoAhead</html>")
+        mock_resp.headers = {"Server": "GoAhead", "Content-Type": "text/html"}
 
         gw._session = MagicMock()
         gw._session.get = AsyncMock(return_value=mock_resp)
@@ -2029,6 +2032,43 @@ class TestProtocolAutoDetect:
             return_value=failing,
         ):
             with pytest.raises(IT600ConnectionError):
+                await gw.connect()
+
+    async def test_reject_frames_produce_specific_error(self):
+        """Reject-frame errors → IT600UnsupportedFirmwareError."""
+        gw = _make_gateway()
+
+        reject_proto = MagicMock()
+        reject_proto.name = "Fail"
+        reject_proto.connect = AsyncMock(
+            side_effect=ValueError(
+                "Gateway returned a reject frame (33 bytes, 0xAE trailer)"
+            )
+        )
+
+        not_impl = MagicMock()
+        not_impl.name = "ECDH"
+        not_impl.connect = AsyncMock(
+            side_effect=NotImplementedError("not yet")
+        )
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.read = AsyncMock(return_value=b"<html>GoAhead</html>")
+        mock_resp.headers = {"Server": "GoAhead", "Content-Type": "text/html"}
+        gw._session = MagicMock()
+        gw._session.get = AsyncMock(return_value=mock_resp)
+
+        with patch(
+            "custom_components.salus.gateway.AesCbcProtocol",
+            return_value=reject_proto,
+        ), patch(
+            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            return_value=not_impl,
+        ):
+            with pytest.raises(
+                IT600UnsupportedFirmwareError, match="reject frame"
+            ):
                 await gw.connect()
 
 
