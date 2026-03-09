@@ -32,7 +32,6 @@ from custom_components.salus.const import (
 )
 from custom_components.salus.exceptions import (
     IT600AuthenticationError,
-    IT600CommandError,
     IT600ConnectionError,
 )
 from custom_components.salus.gateway import IT600Gateway
