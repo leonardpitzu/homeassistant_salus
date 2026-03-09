@@ -74,7 +74,7 @@ BATTERY_ERROR_CODES: frozenset[str] = frozenset({"Error22", "Error32"})
 # Only these OEM models are battery-powered thermostats that report a
 # 0-5 battery level at Status_d character 99.  All other IT600 devices
 # are mains-powered and always report 0 (which is meaningless).
-BATTERY_OEM_MODELS: frozenset[str] = frozenset({"SQ610RF", "SQ610RF(WB)", "SQ610RFNH(WB)"", "SQ610RFNH"})
+BATTERY_OEM_MODELS: frozenset[str] = frozenset({"SQ610RF", "SQ610RF(WB)", "SQ610RFNH(WB)", "SQ610RFNH"})
 
 # Mapping from raw battery level (0-5) to percentage for Status_d character 99.
 # Based on thermostat display: 5=4 lines (100%), 4=3 lines (75%), 3=2 lines (50%),
