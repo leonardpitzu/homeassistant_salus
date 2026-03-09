@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 from typing import Any, Callable, Awaitable
@@ -116,7 +117,12 @@ class IT600Gateway:
 
     async def connect(self) -> str:
         """Connect to the gateway and return its MAC address."""
-        _LOGGER.debug("Trying to connect to gateway at %s", self._host)
+        _LOGGER.debug(
+            "Trying to connect to gateway at %s:%s (EUID fingerprint: %s)",
+            self._host,
+            self._port,
+            hashlib.md5(self._encryptor._cipher.algorithm.key).hexdigest()[:8],
+        )
 
         if self._session is None:
             self._session = aiohttp.ClientSession()
@@ -127,10 +133,24 @@ class IT600Gateway:
                 "read", {"requestAttr": "readall"}
             )
 
+            _LOGGER.debug(
+                "Gateway returned %d top-level keys: %s",
+                len(all_devices),
+                list(all_devices.keys()),
+            )
+
+            device_list = all_devices.get("id", [])
+            _LOGGER.debug(
+                "Gateway returned %d device entries; first-level keys per "
+                "entry: %s",
+                len(device_list),
+                [list(d.keys()) for d in device_list[:5]],
+            )
+
             gateway = next(
                 (
                     x
-                    for x in all_devices["id"]
+                    for x in device_list
                     if x.get("sGateway", {}).get("NetworkLANMAC", "")
                 ),
                 None,
@@ -141,17 +161,38 @@ class IT600Gateway:
                     "Gateway response did not contain gateway information"
                 )
 
-            return gateway["sGateway"]["NetworkLANMAC"]
+            mac = gateway["sGateway"]["NetworkLANMAC"]
+            _LOGGER.debug("Gateway MAC: %s", mac)
+            return mac
 
         except (IT600ConnectionError, IT600CommandError) as exc:
+            _LOGGER.debug(
+                "Connect failed with %s: %s — probing gateway with plain GET",
+                type(exc).__name__,
+                exc,
+            )
             # Distinguish bad host from bad EUID: if a plain GET succeeds the
             # host is reachable but the EUID must be wrong.
             try:
                 async with asyncio.timeout(self._request_timeout):
-                    await self._session.get(
+                    probe = await self._session.get(
                         f"http://{self._host}:{self._port}/"
                     )
-            except Exception:
+                    probe_body = await probe.read()
+                    _LOGGER.debug(
+                        "Plain GET probe: HTTP %s, content-type=%s, "
+                        "body length=%d, body (first 200 bytes): %s",
+                        probe.status,
+                        probe.headers.get("Content-Type", "<missing>"),
+                        len(probe_body),
+                        probe_body[:200].decode(errors="replace"),
+                    )
+            except Exception as probe_exc:
+                _LOGGER.debug(
+                    "Plain GET probe failed: %s: %s",
+                    type(probe_exc).__name__,
+                    probe_exc,
+                )
                 raise IT600ConnectionError(
                     "Cannot reach iT600 gateway — check host / IP address"
                 ) from exc
@@ -1393,18 +1434,36 @@ class IT600Gateway:
 
             url = f"http://{self._host}:{self._port}/deviceid/{command}"
             body_json = json.dumps(request_body)
+            encrypted_body = self._encryptor.encrypt(body_json)
 
-            if self._debug:
-                _LOGGER.debug("Gateway request: POST %s\n%s", url, body_json)
+            _LOGGER.debug(
+                "Gateway request: POST %s (%d bytes plaintext, "
+                "%d bytes encrypted)",
+                url,
+                len(body_json),
+                len(encrypted_body),
+            )
 
             try:
                 async with asyncio.timeout(self._request_timeout):
                     resp = await self._session.post(
                         url,
-                        data=self._encryptor.encrypt(body_json),
+                        data=encrypted_body,
                         headers={"content-type": "application/json"},
                     )
                     raw = await resp.read()
+
+                    _LOGGER.debug(
+                        "Gateway response: HTTP %s, "
+                        "content-type=%s, content-length=%s, "
+                        "body=%d bytes, hex=%s",
+                        resp.status,
+                        resp.headers.get("Content-Type", "<missing>"),
+                        resp.headers.get("Content-Length", "<missing>"),
+                        len(raw),
+                        raw.hex() if len(raw) <= 512 else
+                        f"{raw[:256].hex()}...({len(raw)} total)",
+                    )
 
                     if resp.status != 200:
                         _LOGGER.error(
@@ -1422,8 +1481,9 @@ class IT600Gateway:
                         if aligned < 16:
                             _LOGGER.error(
                                 "Gateway response too short to be "
-                                "encrypted (%d bytes)",
+                                "encrypted (%d bytes, hex: %s)",
                                 len(raw),
+                                raw.hex(),
                             )
                             raise IT600CommandError(
                                 "Gateway returned an unencrypted or "
@@ -1431,26 +1491,45 @@ class IT600Gateway:
                             )
                         _LOGGER.debug(
                             "Gateway response is not block-aligned "
-                            "(%d bytes); trimming %d trailing byte(s)",
+                            "(%d bytes); trimming %d trailing byte(s) "
+                            "(trimmed tail hex: %s)",
                             len(raw),
                             remainder,
+                            raw[aligned:].hex(),
                         )
                         raw = raw[:aligned]
 
                     try:
                         decrypted = self._encryptor.decrypt(raw)
                     except ValueError as exc:
+                        _LOGGER.debug(
+                            "Decryption failed for %d-byte response: %s. "
+                            "Full hex: %s",
+                            len(raw),
+                            exc,
+                            raw.hex() if len(raw) <= 512 else
+                            f"{raw[:256].hex()}...({len(raw)} total)",
+                        )
                         raise IT600CommandError(
                             "Failed to decrypt gateway response "
                             "(invalid padding — likely wrong EUID)"
                         ) from exc
 
-                    if self._debug:
-                        _LOGGER.debug("Gateway response:\n%s", decrypted)
+                    _LOGGER.debug(
+                        "Decrypted response (%d chars): %.500s",
+                        len(decrypted),
+                        decrypted,
+                    )
 
                     try:
                         result = json.loads(decrypted)
                     except json.JSONDecodeError as exc:
+                        _LOGGER.debug(
+                            "JSON parse failed: %s. "
+                            "Decrypted bytes hex: %s",
+                            exc,
+                            decrypted.encode(errors="replace").hex()[:512],
+                        )
                         raise IT600CommandError(
                             "Gateway response decrypted but is not "
                             "valid JSON (likely wrong EUID)"
@@ -1458,7 +1537,10 @@ class IT600Gateway:
 
                     if result.get("status") != "success":
                         _LOGGER.error(
-                            "%s failed: %s", command, repr(request_body)
+                            "%s failed (status=%s): %s",
+                            command,
+                            result.get("status"),
+                            repr(request_body),
                         )
                         raise IT600CommandError(
                             f"Gateway rejected '{command}': {repr(request_body)}"
@@ -1472,6 +1554,9 @@ class IT600Gateway:
                     "Timeout communicating with iT600 gateway"
                 ) from exc
             except client_exceptions.ClientConnectorError as exc:
+                _LOGGER.debug(
+                    "Connection refused/failed: %s", exc
+                )
                 raise IT600ConnectionError(
                     "Cannot reach iT600 gateway — check host / IP address"
                 ) from exc
@@ -1480,7 +1565,8 @@ class IT600Gateway:
                 raise
             except Exception as exc:
                 _LOGGER.error(
-                    "Unexpected error: %s / %s", type(exc).__name__, exc
+                    "Unexpected error: %s / %s", type(exc).__name__, exc,
+                    exc_info=True,
                 )
                 raise IT600CommandError(
                     "Unknown error communicating with iT600 gateway"
