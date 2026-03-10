@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from typing import Any, Callable, Awaitable
 
 import aiohttp
@@ -56,7 +57,7 @@ from .exceptions import (
 )
 from .protocol import GatewayProtocol
 from .protocol_aes_cbc import AesCbcProtocol
-from .protocol_ecdh_aes_ccm import EcdhAesCcmProtocol
+from .protocol_new_aes_cbc import NewAesCbcProtocol
 from .models import (
     BinarySensorDevice,
     ClimateDevice,
@@ -123,14 +124,14 @@ class IT600Gateway:
     async def connect(self) -> str:
         """Connect to the gateway and return its MAC address.
 
-        Tries each known protocol in order (AES-256, AES-128, then
-        ECDH+AES-CCM).  Stores the winning protocol so all subsequent
-        requests use it.
+        Tries each known protocol in order (old AES-256-CBC, old AES-128-CBC,
+        then new-firmware AES-256-CBC, new-firmware AES-128-CBC).  Stores the
+        winning protocol so all subsequent requests use it.
         """
         euid_masked = self._euid[:4] + "…" + self._euid[-4:]
         _LOGGER.debug(
-            "Connecting to %s:%s (EUID %s)", self._host, self._port,
-            euid_masked,
+            "Connecting to %s:%s (EUID %s, %d protocol candidates)",
+            self._host, self._port, euid_masked, 4,
         )
 
         if self._session is None:
@@ -142,7 +143,8 @@ class IT600Gateway:
         candidates: list[GatewayProtocol] = [
             AesCbcProtocol(self._euid),
             AesCbcProtocol(self._euid, aes128=True),
-            EcdhAesCcmProtocol(self._euid),
+            NewAesCbcProtocol(aes256=True),
+            NewAesCbcProtocol(aes256=False),
         ]
 
         saw_reject = False
@@ -150,7 +152,8 @@ class IT600Gateway:
         attempt_log: list[str] = []
 
         for proto in candidates:
-            _LOGGER.debug("Trying %s", proto.name)
+            _LOGGER.debug("Trying protocol %s …", proto.name)
+            t0 = time.monotonic()
             try:
                 result = await proto.connect(
                     self._session,
@@ -158,17 +161,34 @@ class IT600Gateway:
                     self._port,
                     self._request_timeout,
                 )
+                elapsed_ms = (time.monotonic() - t0) * 1000
                 self._protocol = proto
-                _LOGGER.debug("Protocol %s: success", proto.name)
-                attempt_log.append(f"{proto.name}: success")
+                _LOGGER.debug(
+                    "Protocol %s: success (%.0fms)",
+                    proto.name, elapsed_ms,
+                )
+                attempt_log.append(f"{proto.name}: success ({elapsed_ms:.0f}ms)")
                 break
             except NotImplementedError as exc:
-                _LOGGER.debug("Protocol %s: %s", proto.name, exc)
-                attempt_log.append(f"{proto.name}: handshake failed ({exc})")
+                elapsed_ms = (time.monotonic() - t0) * 1000
+                _LOGGER.debug(
+                    "Protocol %s: not implemented (%.0fms): %s",
+                    proto.name, elapsed_ms, exc,
+                )
+                attempt_log.append(
+                    f"{proto.name}: not implemented ({elapsed_ms:.0f}ms) — {exc}"
+                )
             except Exception as exc:
+                elapsed_ms = (time.monotonic() - t0) * 1000
                 msg = str(exc)
-                _LOGGER.debug("Protocol %s failed: %s", proto.name, msg)
-                attempt_log.append(f"{proto.name}: {msg}")
+                exc_type = type(exc).__name__
+                _LOGGER.debug(
+                    "Protocol %s failed (%.0fms, %s): %s",
+                    proto.name, elapsed_ms, exc_type, msg,
+                )
+                attempt_log.append(
+                    f"{proto.name}: {exc_type} ({elapsed_ms:.0f}ms) — {msg}"
+                )
                 if "reject frame" in msg.lower():
                     saw_reject = True
                 if "new-protocol frame" in msg.lower():
@@ -216,26 +236,36 @@ class IT600Gateway:
 
         # --- Diagnostic summary (single block a user can copy-paste) ---
         summary_lines = [
-            "--- Salus gateway diagnostic summary ---",
-            f"Host: {self._host}:{self._port}",
-            f"EUID: {euid_masked}",
-            f"Reject frames seen: {saw_reject}",
-            f"New-protocol frames seen: {saw_new_protocol}",
+            "",
+            "╔══════════════════════════════════════════════════════════════╗",
+            "║           Salus gateway diagnostic summary                 ║",
+            "╚══════════════════════════════════════════════════════════════╝",
+            f"  Host ............: {self._host}:{self._port}",
+            f"  EUID ............: {euid_masked}",
+            f"  Reject frames ...: {saw_reject}",
+            f"  New-proto frames : {saw_new_protocol}",
+            "  Protocol attempts:",
         ]
         for entry in attempt_log:
-            summary_lines.append(f"  • {entry}")
+            summary_lines.append(f"    • {entry}")
         if probe_info:
-            summary_lines.append(f"Root probe: {probe_info}")
+            summary_lines.append(f"  Root probe ......: {probe_info}")
+        summary_lines.append("")
         summary_lines.append(
-            "Please include everything above when reporting issues at "
-            "https://github.com/leonardpitzu/homeassistant_salus/issues/3"
+            "  Please include ALL the debug logs from "
+            "custom_components.salus when reporting issues at"
         )
-        summary_lines.append("--- end diagnostic summary ---")
+        summary_lines.append(
+            "  https://github.com/leonardpitzu/homeassistant_salus/issues/3"
+        )
+        summary_lines.append(
+            "══════════════════════════════════════════════════════════════"
+        )
         _LOGGER.warning("\n".join(summary_lines))
 
         if saw_reject or saw_new_protocol:
             raise IT600UnsupportedFirmwareError(
-                "Gateway reachable but Security1 handshake failed — "
+                "Gateway reachable but new-firmware protocol failed — "
                 "see the WARNING log above for full diagnostic report.  "
                 "See https://github.com/leonardpitzu/homeassistant_salus/issues/3"
             )
@@ -1504,14 +1534,17 @@ class IT600Gateway:
             encrypted_body = self._protocol.wrap_request(body_json)
 
             _LOGGER.debug(
-                "[%s] POST %s (%d bytes plaintext, %d bytes encrypted)",
+                "[%s] POST %s (%d bytes plaintext, %d bytes encrypted, "
+                "body=%.300s)",
                 self._protocol.name,
                 url,
                 len(body_json),
                 len(encrypted_body),
+                body_json,
             )
 
             try:
+                t0 = time.monotonic()
                 async with asyncio.timeout(self._request_timeout):
                     resp = await self._session.post(
                         url,
@@ -1520,46 +1553,49 @@ class IT600Gateway:
                     )
                     raw = await resp.read()
 
-                    _LOGGER.debug(
-                        "[%s] Response: HTTP %s, %d bytes, hex=%s",
-                        self._protocol.name,
-                        resp.status,
-                        len(raw),
-                        raw.hex() if len(raw) <= 512 else
-                        f"{raw[:256].hex()}...({len(raw)} total)",
+                elapsed_ms = (time.monotonic() - t0) * 1000
+
+                _LOGGER.debug(
+                    "[%s] Response: HTTP %s, %d bytes, %.0fms, hex=%s",
+                    self._protocol.name,
+                    resp.status,
+                    len(raw),
+                    elapsed_ms,
+                    raw.hex() if len(raw) <= 512 else
+                    f"{raw[:256].hex()}...({len(raw)} total)",
+                )
+
+                if resp.status != 200:
+                    raise IT600CommandError(
+                        f"Gateway returned HTTP {resp.status}"
                     )
 
-                    if resp.status != 200:
-                        raise IT600CommandError(
-                            f"Gateway returned HTTP {resp.status}"
-                        )
-
-                    try:
-                        decrypted = self._protocol.unwrap_response(raw)
-                    except (ValueError, RuntimeError) as exc:
-                        _LOGGER.debug(
-                            "[%s] Decryption failed for %d-byte response: %s",
-                            self._protocol.name, len(raw), exc,
-                        )
-                        raise IT600CommandError(
-                            "Failed to decrypt gateway response"
-                        ) from exc
-
+                try:
+                    decrypted = self._protocol.unwrap_response(raw)
+                except (ValueError, RuntimeError) as exc:
                     _LOGGER.debug(
-                        "[%s] Decrypted (%d chars): %.500s",
-                        self._protocol.name,
-                        len(decrypted),
-                        decrypted,
+                        "[%s] Decryption failed for %d-byte response: %s",
+                        self._protocol.name, len(raw), exc,
+                    )
+                    raise IT600CommandError(
+                        "Failed to decrypt gateway response"
+                    ) from exc
+
+                _LOGGER.debug(
+                    "[%s] Decrypted (%d chars): %.500s",
+                    self._protocol.name,
+                    len(decrypted),
+                    decrypted,
+                )
+
+                result = json.loads(decrypted)
+
+                if result.get("status") != "success":
+                    raise IT600CommandError(
+                        f"Gateway rejected '{command}': {repr(request_body)}"
                     )
 
-                    result = json.loads(decrypted)
-
-                    if result.get("status") != "success":
-                        raise IT600CommandError(
-                            f"Gateway rejected '{command}': {repr(request_body)}"
-                        )
-
-                    return result
+                return result
 
             except TimeoutError as exc:
                 raise IT600ConnectionError(

@@ -1,7 +1,8 @@
 """Abstract base for Salus gateway communication protocols.
 
-Every protocol variant (AES-CBC, ECDH+AES-CCM, or future schemes) must
-implement this interface so the gateway can swap protocols transparently.
+Every protocol variant (legacy AES-CBC, new-firmware AES-128-CBC, or
+future schemes) must implement this interface so the gateway can swap
+protocols transparently.
 """
 
 from __future__ import annotations
@@ -84,7 +85,7 @@ def is_new_protocol_frame(raw: bytes) -> bool:
     """Return True if *raw* is a new-protocol response frame (trailer ``0xAF``).
 
     The gateway processed the request and replied with encrypted data
-    using the new ECDH+AES-CCM protocol.
+    using the new-firmware protocol.
     """
     return len(raw) == REJECT_FRAME_LENGTH and raw[-1] == NEW_PROTOCOL_TRAILER
 
@@ -117,7 +118,7 @@ class GatewayProtocol(abc.ABC):
         """Perform the full session setup and return the first *readall* response.
 
         For stateless protocols (AES-CBC) this is just an encrypted POST.
-        For session-based protocols (ECDH+AES-CCM) this includes key exchange.
+        For session-based protocols this may include key exchange.
 
         Returns the parsed JSON ``{"status": "success", "id": [...]}`` dict.
         Raises on failure.

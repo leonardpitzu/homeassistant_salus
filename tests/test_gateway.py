@@ -171,7 +171,7 @@ class TestConnect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=mock_proto,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
         ):
             mac = await gw.connect()
 
@@ -198,7 +198,7 @@ class TestConnect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=mock_proto,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=mock_proto,
         ):
             with pytest.raises((IT600ConnectionError, IT600AuthenticationError)):
@@ -1910,7 +1910,7 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=mock_proto,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
         ):
             mac = await gw.connect()
 
@@ -1942,8 +1942,8 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             side_effect=_aes_factory,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
-            return_value=MagicMock(name="ECDH", connect=AsyncMock(side_effect=NotImplementedError("nope"))),
+            "custom_components.salus.gateway.NewAesCbcProtocol",
+            return_value=MagicMock(name="NewCBC", connect=AsyncMock(side_effect=NotImplementedError("nope"))),
         ):
             mac = await gw.connect()
 
@@ -1977,7 +1977,7 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             side_effect=_aes_factory,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=not_impl_proto,
         ):
             mac = await gw.connect()
@@ -2005,7 +2005,7 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=failing,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=failing,
         ):
             with pytest.raises(IT600AuthenticationError):
@@ -2028,7 +2028,7 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=failing,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=failing,
         ):
             with pytest.raises(IT600ConnectionError):
@@ -2063,11 +2063,11 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=reject_proto,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=not_impl,
         ):
             with pytest.raises(
-                IT600UnsupportedFirmwareError, match="Security1 handshake failed"
+                IT600UnsupportedFirmwareError, match="new-firmware protocol failed"
             ):
                 await gw.connect()
 
@@ -2101,11 +2101,11 @@ class TestProtocolAutoDetect:
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=new_proto,
         ), patch(
-            "custom_components.salus.gateway.EcdhAesCcmProtocol",
+            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=not_impl,
         ):
             with pytest.raises(
-                IT600UnsupportedFirmwareError, match="Security1 handshake failed"
+                IT600UnsupportedFirmwareError, match="new-firmware protocol failed"
             ):
                 await gw.connect()
 

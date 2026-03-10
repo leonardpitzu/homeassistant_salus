@@ -58,14 +58,27 @@ async def async_setup_gateway_entry(
 
     gateway = IT600Gateway(host=host, euid=euid)
 
+    _LOGGER.debug(
+        "Setting up Salus gateway: host=%s, euid=%s…%s",
+        host, euid[:4], euid[-4:],
+    )
+
     try:
-        for remaining in reversed(range(3)):
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             try:
+                _LOGGER.debug(
+                    "Connection attempt %d/%d", attempt, max_attempts,
+                )
                 await gateway.connect()
                 await gateway.poll_status()
                 break
-            except Exception:
-                if remaining == 0:
+            except Exception as exc:
+                _LOGGER.debug(
+                    "Attempt %d/%d failed (%s): %s",
+                    attempt, max_attempts, type(exc).__name__, exc,
+                )
+                if attempt == max_attempts:
                     raise
                 await asyncio.sleep(3)
     except IT600ConnectionError:
@@ -83,7 +96,7 @@ async def async_setup_gateway_entry(
     except IT600UnsupportedFirmwareError:
         _LOGGER.error(
             "Gateway firmware uses a new encryption protocol not yet supported. "
-            "See https://github.com/epoplavskis/homeassistant_salus/issues/81"
+            "See https://github.com/leonardpitzu/homeassistant_salus/issues/3"
         )
         return False
 

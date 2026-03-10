@@ -1,24 +1,31 @@
-"""AES-CBC protocol for Salus iT600 local gateway communication.
+"""AES-CBC protocol for new-firmware Salus iT600 gateways (>= 2025).
 
-Original firmware uses AES-256-CBC with a static key derived from the
-gateway EUID and a fixed IV.  Some intermediate firmware versions may
-use AES-128-CBC (just the raw 16-byte MD5 key, without zero-padding).
+New-firmware gateways use AES-CBC with a fixed universal key (named
+``GENERAL`` in the APK) and a random IV per message.
 
-Key derivation:
-    md5_key = MD5("Salus-{euid_lowercase}")      # 16 bytes
-    AES-256: key = md5_key + 16×0x00              # 32 bytes
-    AES-128: key = md5_key                        # 16 bytes
+Key: hardcoded constant extracted from the Salus Smart Home APK
+     (``package:smart_home/encryption/enc.dart``).
+     The raw hex constant is 16 bytes.  The actual AES key size is
+     unknown (128-bit raw, or 256-bit zero-padded).  Both variants
+     are exposed so the gateway auto-detection can try each.
+IV:  random 16-byte vector generated per request, prepended to the wire
+     payload so the receiver can extract it for decryption.
+Padding: PKCS7, 128-bit block size.
 
-IV: fixed 16-byte vector (see _IV below).
-Padding: PKCS7 (block size 128 bits).
+Wire format (both requests and responses):
+    [16-byte IV] + [AES-CBC ciphertext (PKCS7 padded)]
+
+The gateway still uses the same HTTP endpoints as the old firmware:
+    POST /deviceid/read   — encrypted ``{"requestAttr": "readall"}``
+    POST /deviceid/write  — encrypted command payload
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
+import os
 import time
 from typing import Any
 
@@ -31,76 +38,106 @@ from .protocol import GatewayProtocol, parse_frame_33
 
 _LOGGER = logging.getLogger(__name__)
 
-_IV = bytes(
-    [0x88, 0xA6, 0xB0, 0x79, 0x5D, 0x85, 0xDB, 0xFC,
-     0xE6, 0xE0, 0xB3, 0xE9, 0xA6, 0x29, 0x65, 0x4B]
-)
+# Fixed key from the Salus Smart Home APK (enc.dart), named "GENERAL" in binary.
+_KEY_RAW = bytes.fromhex("54b544979a4ba190ac2b5139b32c3528")  # 16 bytes
+
+# AES-256 variant: zero-padded to 32 bytes (same pattern as old protocol).
+_KEY_256 = _KEY_RAW + bytes(16)
+
+_IV_LENGTH = 16
+_BLOCK_SIZE = 128  # bits
 
 
-class AesCbcProtocol(GatewayProtocol):
-    """AES-CBC protocol (legacy / intermediate firmware)."""
+class NewAesCbcProtocol(GatewayProtocol):
+    """AES-CBC protocol for new-firmware gateways (universal key, random IV).
 
-    def __init__(self, euid: str, *, aes128: bool = False) -> None:
-        self._euid = euid
-        self._aes128 = aes128
-        md5_key = hashlib.md5(f"Salus-{euid.lower()}".encode()).digest()
-        key = md5_key if aes128 else md5_key + bytes(16)
-        self._key = key
-        self._cipher = Cipher(algorithms.AES(key), modes.CBC(_IV))
+    Parameters
+    ----------
+    aes256 : bool
+        If *True*, pad the 16-byte key to 32 bytes (AES-256).
+        If *False* (default), use the raw 16-byte key (AES-128).
+    """
+
+    def __init__(self, *, aes256: bool = False) -> None:
+        self._aes256 = aes256
+        self._key = _KEY_256 if aes256 else _KEY_RAW
 
     @property
-    def name(self) -> str:
-        return "AES-128-CBC" if self._aes128 else "AES-256-CBC"
-
-    @property
-    def key_fingerprint(self) -> str:
-        """Short hex fingerprint of the key — useful in debug logs."""
-        return hashlib.md5(self._key).hexdigest()[:8]
+    def name(self) -> str:  # type: ignore[override]
+        return f"NewAES-{'256' if self._aes256 else '128'}-CBC"
 
     def encrypt(self, plaintext: str) -> bytes:
-        """Encrypt a UTF-8 string with AES-CBC + PKCS7 padding."""
-        encryptor = self._cipher.encryptor()
-        padder = padding.PKCS7(128).padder()
+        """Encrypt a UTF-8 string with AES-CBC + PKCS7 + random IV.
+
+        Returns ``iv (16 bytes) || ciphertext``.
+        """
+        iv = os.urandom(_IV_LENGTH)
+        cipher = Cipher(algorithms.AES(self._key), modes.CBC(iv))
+        encryptor = cipher.encryptor()
+        padder = padding.PKCS7(_BLOCK_SIZE).padder()
         padded: bytes = padder.update(plaintext.encode()) + padder.finalize()
-        ct = encryptor.update(padded) + encryptor.finalize()
+        ciphertext = encryptor.update(padded) + encryptor.finalize()
+        wire = iv + ciphertext
         _LOGGER.debug(
-            "[%s] encrypt: %d bytes plaintext → %d bytes ciphertext "
-            "(key_fp=%s, ct=%s)",
-            self.name, len(plaintext), len(ct),
-            self.key_fingerprint,
-            ct.hex() if len(ct) <= 128
-            else f"{ct[:64].hex()}...({len(ct)}B)",
+            "[%s] encrypt: %d bytes plaintext → %d bytes wire "
+            "(iv=%s, ct=%s)",
+            self.name, len(plaintext), len(wire),
+            iv.hex(),
+            ciphertext.hex() if len(ciphertext) <= 128
+            else f"{ciphertext[:64].hex()}...({len(ciphertext)}B)",
         )
-        return ct
+        return wire
 
     def decrypt(self, ciphertext: bytes) -> str:
-        """Decrypt AES-CBC cipher bytes, strip PKCS7 padding, return UTF-8."""
+        """Decrypt ``iv (16 bytes) || ciphertext``, strip PKCS7, return UTF-8.
+
+        Raises ``ValueError`` on padding or length errors.
+        """
+        if len(ciphertext) <= _IV_LENGTH:
+            raise ValueError(
+                f"Ciphertext too short ({len(ciphertext)} bytes) — "
+                f"need at least {_IV_LENGTH + 1}"
+            )
+        iv = ciphertext[:_IV_LENGTH]
+        encrypted = ciphertext[_IV_LENGTH:]
+
+        remainder = len(encrypted) % 16
+        if remainder:
+            _LOGGER.debug(
+                "[%s] decrypt: trimming %d non-block-aligned trailing "
+                "bytes from %d-byte payload",
+                self.name, remainder, len(encrypted),
+            )
+            encrypted = encrypted[: len(encrypted) - remainder]
+
         _LOGGER.debug(
-            "[%s] decrypt: %d bytes ciphertext (block_aligned=%s, key_fp=%s)",
-            self.name, len(ciphertext),
-            len(ciphertext) % 16 == 0,
-            self.key_fingerprint,
+            "[%s] decrypt: %d bytes total, iv=%s, %d bytes ciphertext "
+            "(block-aligned=%s)",
+            self.name, len(ciphertext), iv.hex(), len(encrypted),
+            len(encrypted) % 16 == 0,
         )
+
         try:
-            decryptor = self._cipher.decryptor()
-            padded: bytes = decryptor.update(ciphertext) + decryptor.finalize()
+            cipher = Cipher(algorithms.AES(self._key), modes.CBC(iv))
+            decryptor = cipher.decryptor()
+            padded: bytes = decryptor.update(encrypted) + decryptor.finalize()
         except Exception as exc:
             _LOGGER.debug(
                 "[%s] decrypt: AES decryption failed: %s — "
                 "raw first 64 bytes: %s",
-                self.name, exc, ciphertext[:64].hex(),
+                self.name, exc, encrypted[:64].hex(),
             )
             raise
 
         try:
-            unpadder = padding.PKCS7(128).unpadder()
+            unpadder = padding.PKCS7(_BLOCK_SIZE).unpadder()
             plain: bytes = unpadder.update(padded) + unpadder.finalize()
         except ValueError as exc:
+            # PKCS7 padding invalid → almost certainly wrong key
             _LOGGER.debug(
                 "[%s] decrypt: PKCS7 unpadding failed: %s — "
                 "last decrypted block hex: %s",
-                self.name, exc,
-                padded[-16:].hex() if len(padded) >= 16 else padded.hex(),
+                self.name, exc, padded[-16:].hex() if len(padded) >= 16 else padded.hex(),
             )
             raise
 
@@ -121,19 +158,11 @@ class AesCbcProtocol(GatewayProtocol):
         return text
 
     def wrap_request(self, body_json: str) -> bytes:
-        """Encrypt the JSON body — no additional framing for AES-CBC."""
+        """Encrypt the JSON body with a random IV."""
         return self.encrypt(body_json)
 
     def unwrap_response(self, raw: bytes) -> str:
-        """Strip non-block-aligned trailer, decrypt, return JSON string."""
-        remainder = len(raw) % 16
-        if remainder:
-            _LOGGER.debug(
-                "[%s] unwrap: trimming %d non-block-aligned trailing "
-                "bytes from %d-byte response",
-                self.name, remainder, len(raw),
-            )
-            raw = raw[: len(raw) - remainder]
+        """Decrypt a response (``iv || ciphertext``) and return JSON string."""
         return self.decrypt(raw)
 
     async def connect(
@@ -149,9 +178,9 @@ class AesCbcProtocol(GatewayProtocol):
         encrypted = self.encrypt(body)
 
         _LOGGER.debug(
-            "[%s] POST %s (%d→%d bytes, key_fp=%s, sent=%s)",
+            "[%s] POST %s (%d→%d bytes, key=%d-bit, sent=%s)",
             self.name, url, len(body), len(encrypted),
-            self.key_fingerprint,
+            len(self._key) * 8,
             encrypted.hex() if len(encrypted) <= 256
             else f"{encrypted[:128].hex()}...({len(encrypted)}B)",
         )
@@ -185,7 +214,7 @@ class AesCbcProtocol(GatewayProtocol):
         if resp.status != 200:
             raise ValueError(f"HTTP {resp.status}")
 
-        # Detect 33-byte frames (reject or new-protocol) before decryption.
+        # Detect 33-byte reject / new-protocol frames.
         frame = parse_frame_33(raw)
         if frame is not None:
             _LOGGER.debug(
@@ -194,15 +223,10 @@ class AesCbcProtocol(GatewayProtocol):
                 self.name, frame.trailer_name, frame.counter,
                 frame.tag.hex(), frame.payload.hex(),
             )
-            if frame.is_reject:
-                raise ValueError(
-                    "Gateway returned a reject frame (0xAE) — "
-                    "firmware likely requires a newer protocol"
-                )
             raise ValueError(
-                f"Gateway returned a new-protocol frame (0xAF, "
-                f"counter={frame.counter}, tag={frame.tag.hex()}) — "
-                f"firmware uses a newer protocol"
+                f"Gateway returned a {frame.trailer_name} frame "
+                f"(0x{frame.trailer:02X}) — new AES-CBC key may be "
+                f"incorrect or protocol mismatch"
             )
 
         # Heuristic analysis before attempting decryption.
@@ -258,8 +282,3 @@ def _log_response_heuristics(proto_name: str, raw: bytes) -> None:
             "gateway may not be encrypting at all. First 200 bytes: %r",
             proto_name, raw[:200].decode(errors="replace"),
         )
-
-
-# Backward-compatible alias used throughout the codebase.
-IT600Encryptor = AesCbcProtocol
-

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,6 +11,15 @@ from custom_components.salus.protocol_aes_cbc import (
     AesCbcProtocol,
     IT600Encryptor,
 )
+
+
+def _mock_response(status: int = 200, body: bytes = b"") -> MagicMock:
+    """Create a mock HTTP response with headers as a plain dict."""
+    resp = MagicMock()
+    resp.status = status
+    resp.read = AsyncMock(return_value=body)
+    resp.headers = {"Content-Type": "application/octet-stream"}
+    return resp
 
 # ---------------------------------------------------------------------------
 #  AES-256-CBC (default)
@@ -188,17 +197,9 @@ class TestAesCbcConnect:
         }
         response_encrypted = proto.encrypt(json.dumps(response_json))
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=response_encrypted)
+        mock_resp = _mock_response(200, response_encrypted)
 
         mock_session = AsyncMock()
-        mock_session.post = AsyncMock(
-            return_value=AsyncMock(
-                __aenter__=AsyncMock(return_value=mock_resp),
-                __aexit__=AsyncMock(),
-            )
-        )
         mock_session.post.return_value = mock_resp
 
         result = await proto.connect(mock_session, "192.168.1.1", 80, 5)
@@ -207,9 +208,7 @@ class TestAesCbcConnect:
     async def test_connect_http_error_raises(self):
         proto = AesCbcProtocol(self.EUID)
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 500
-        mock_resp.read = AsyncMock(return_value=b"error")
+        mock_resp = _mock_response(500, b"error")
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
@@ -222,23 +221,19 @@ class TestAesCbcConnect:
         # Encrypt something that decrypts fine but isn't valid JSON
         raw = proto.encrypt("this is not json")
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=raw)
+        mock_resp = _mock_response(200, raw)
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
 
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(ValueError, match="not valid JSON"):
             await proto.connect(mock_session, "192.168.1.1", 80, 5)
 
     async def test_connect_status_not_success_raises(self):
         proto = AesCbcProtocol(self.EUID)
         raw = proto.encrypt(json.dumps({"status": "error"}))
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=raw)
+        mock_resp = _mock_response(200, raw)
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
@@ -252,9 +247,7 @@ class TestAesCbcConnect:
         response_json = {"status": "success", "id": []}
         raw = proto.encrypt(json.dumps(response_json)) + b"\x01"
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=raw)
+        mock_resp = _mock_response(200, raw)
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
@@ -267,9 +260,7 @@ class TestAesCbcConnect:
         proto = AesCbcProtocol(self.EUID)
         reject = bytes(32) + b"\xAE"
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=reject)
+        mock_resp = _mock_response(200, reject)
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
@@ -282,9 +273,7 @@ class TestAesCbcConnect:
         proto = AesCbcProtocol(self.EUID)
         new_proto_resp = bytes(32) + b"\xAF"
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=new_proto_resp)
+        mock_resp = _mock_response(200, new_proto_resp)
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
@@ -301,9 +290,7 @@ class TestAesCbcConnect:
             "ae"
         )
 
-        mock_resp = AsyncMock()
-        mock_resp.status = 200
-        mock_resp.read = AsyncMock(return_value=reject)
+        mock_resp = _mock_response(200, reject)
 
         mock_session = AsyncMock()
         mock_session.post.return_value = mock_resp
