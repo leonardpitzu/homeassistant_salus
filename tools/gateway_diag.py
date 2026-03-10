@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Salus iT600 gateway Security1 handshake diagnostic tool.
+"""Salus iT600 gateway diagnostic tool.
 
 Run this against your gateway to produce a comprehensive diagnostic
 report.  The output can be shared in a GitHub issue without installing
@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import logging
 import sys
 import time
@@ -27,28 +26,10 @@ _project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_project_root))
 
 import aiohttp  # noqa: E402
-from cryptography.hazmat.primitives.asymmetric.x25519 import (  # noqa: E402
-    X25519PrivateKey,
-)
-from cryptography.hazmat.primitives.serialization import (  # noqa: E402
-    Encoding,
-    PublicFormat,
-)
 
 from custom_components.salus.protocol import parse_frame_33  # noqa: E402
 from custom_components.salus.protocol_aes_cbc import AesCbcProtocol  # noqa: E402
-from custom_components.salus.protocol_ecdh_aes_ccm import (  # noqa: E402
-    PUBLIC_KEY_LEN,
-    SZ_RANDOM,
-    _build_pop_candidates,
-    _decode_protobuf,
-    aes_ctr_encrypt,
-    build_session_cmd0,
-    build_session_cmd1,
-    derive_session_key,
-    parse_session_resp0,
-    parse_session_resp1,
-)
+from custom_components.salus.protocol_new_aes_cbc import NewAesCbcProtocol  # noqa: E402
 
 # ---------------------------------------------------------------------------
 #  Logging
@@ -119,194 +100,23 @@ async def _probe_aes_cbc(
     return False
 
 
-async def _probe_security1(
+async def _probe_new_aes_cbc(
     session: aiohttp.ClientSession,
     base: str,
-    euid: str,
     timeout: int,
 ) -> bool:
-    """Perform the Security1 handshake with full diagnostics."""
-    LOG.info("=== Phase 2: Security1 (X25519 + AES-256-CTR) ===")
-
-    endpoints = [f"{base}/prov-session", f"{base}/deviceid/read"]
-    pop_candidates = _build_pop_candidates(euid)
-
-    LOG.info("  PoP candidates (%d):", len(pop_candidates))
-    for i, p in enumerate(pop_candidates):
-        LOG.info("    [%d] %s", i, repr(p))
-
-    for endpoint in endpoints:
-        LOG.info("")
-        LOG.info("--- Endpoint: %s ---", endpoint)
-
-        # Generate fresh keypair
-        client_key = X25519PrivateKey.generate()
-        client_pub = client_key.public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
-        LOG.info("  Client pubkey (%dB): %s", len(client_pub), client_pub.hex())
-
-        # Step 1: SessionCmd0
-        cmd0 = build_session_cmd0(client_pub)
-        LOG.info("  SessionCmd0 (%dB): %s", len(cmd0), cmd0.hex())
-
+    """Try the new-firmware AES-CBC protocols (universal key)."""
+    LOG.info("=== Phase 2: NewAES-CBC (new firmware, universal key) ===")
+    host = base.split("//")[1].split(":")[0]
+    port = int(base.rsplit(":", 1)[1])
+    for aes256 in (False, True):
+        proto = NewAesCbcProtocol(aes256=aes256)
         try:
-            async with asyncio.timeout(timeout):
-                resp = await session.post(
-                    endpoint, data=cmd0,
-                    headers={"content-type": "application/x-protocomm"},
-                )
-                resp0_raw = await resp.read()
+            result = await proto.connect(session, host, port, timeout)
+            LOG.info("  %s: SUCCESS — readall returned %d devices", proto.name, len(result.get("id", [])))
+            return True
         except Exception as exc:
-            LOG.info("  POST SessionCmd0 → ERROR: %s", exc)
-            continue
-
-        LOG.info("  POST SessionCmd0 → HTTP %d, %dB", resp.status, len(resp0_raw))
-        LOG.info("  Response hex: %s", _hex(resp0_raw))
-
-        frame = parse_frame_33(resp0_raw)
-        if frame:
-            LOG.info(
-                "  ⚠ Got Frame33: type=%s counter=%d tag=%s",
-                frame.trailer_name, frame.counter, frame.tag.hex(),
-            )
-
-        if resp.status != 200:
-            LOG.info("  ⚠ Non-200 — skipping")
-            continue
-
-        # Parse SessionResp0
-        try:
-            status0, device_pub, device_random = parse_session_resp0(resp0_raw)
-        except ValueError as exc:
-            LOG.info("  SessionResp0 parse FAILED: %s", exc)
-            LOG.info("  Trying raw protobuf decode...")
-            try:
-                fields = _decode_protobuf(resp0_raw)
-                for fnum, entries in fields.items():
-                    for _wt, val in entries:
-                        if isinstance(val, bytes):
-                            LOG.info("    field %d (bytes, %dB): %s", fnum, len(val), _hex(val))
-                        else:
-                            LOG.info("    field %d (varint): %d", fnum, val)
-            except Exception:
-                LOG.info("  Raw protobuf decode also failed")
-
-            # Try interpreting as raw 32+16 bytes
-            if len(resp0_raw) >= PUBLIC_KEY_LEN + SZ_RANDOM:
-                LOG.info(
-                    "  Possible raw: pubkey=%s random=%s",
-                    resp0_raw[:PUBLIC_KEY_LEN].hex(),
-                    resp0_raw[PUBLIC_KEY_LEN:PUBLIC_KEY_LEN + SZ_RANDOM].hex(),
-                )
-            continue
-
-        LOG.info("  SessionResp0: status=%d", status0)
-        LOG.info("    device_pubkey (%dB): %s", len(device_pub), device_pub.hex())
-        LOG.info("    device_random (%dB): %s", len(device_random), device_random.hex())
-
-        if status0 != 0:
-            LOG.info("  ⚠ Non-zero status!")
-            continue
-
-        # Step 2: Try each PoP
-        for i, pop in enumerate(pop_candidates):
-            pop_label = repr(pop) if pop is not None else "None (no PoP)"
-            LOG.info("")
-            LOG.info("  --- PoP [%d/%d]: %s ---", i + 1, len(pop_candidates), pop_label)
-
-            try:
-                session_key = derive_session_key(client_key, device_pub, pop)
-            except Exception as exc:
-                LOG.info("    Key derivation failed: %s", exc)
-                continue
-
-            LOG.info("    session_key: %s", session_key.hex())
-
-            # Encrypt device_pubkey → client_verify
-            client_verify = aes_ctr_encrypt(session_key, device_random, device_pub)
-            LOG.info("    client_verify (%dB): %s", len(client_verify), client_verify.hex())
-
-            cmd1 = build_session_cmd1(client_verify)
-            LOG.info("    SessionCmd1 (%dB): %s", len(cmd1), cmd1.hex())
-
-            try:
-                async with asyncio.timeout(timeout):
-                    resp1 = await session.post(
-                        endpoint, data=cmd1,
-                        headers={"content-type": "application/x-protocomm"},
-                    )
-                    resp1_raw = await resp1.read()
-            except Exception as exc:
-                LOG.info("    POST SessionCmd1 → ERROR: %s", exc)
-                continue
-
-            LOG.info("    POST SessionCmd1 → HTTP %d, %dB", resp1.status, len(resp1_raw))
-            LOG.info("    Response hex: %s", _hex(resp1_raw))
-
-            if resp1.status != 200:
-                continue
-
-            try:
-                status1, device_verify = parse_session_resp1(resp1_raw)
-            except ValueError as exc:
-                LOG.info("    SessionResp1 parse FAILED: %s", exc)
-                continue
-
-            LOG.info("    SessionResp1: status=%d", status1)
-            LOG.info("    device_verify (%dB): %s", len(device_verify), device_verify.hex())
-
-            if status1 != 0:
-                LOG.info("    ⚠ Non-zero status — PoP likely wrong")
-                continue
-
-            # Verify: decrypt device_verify at CTR offset 32
-            # The client encrypted 32 bytes (device_pub → client_verify),
-            # consuming CTR blocks 0-1.  The device then encrypts our
-            # pubkey at CTR offset 32 → device_verify.
-            # Decrypt the 64-byte concat to recover both plaintexts:
-            combined_dec = aes_ctr_encrypt(
-                session_key, device_random,
-                client_verify + device_verify,
-            )
-            decrypted_our_pub = combined_dec[PUBLIC_KEY_LEN:]
-
-            LOG.info("    Decrypted device_verify: %s", decrypted_our_pub.hex())
-            LOG.info("    Our pubkey:              %s", client_pub.hex())
-
-            if decrypted_our_pub == client_pub:
-                LOG.info("    ✓✓✓ HANDSHAKE VERIFIED with pop=%s ✓✓✓", pop_label)
-
-                # Try readall
-                LOG.info("")
-                LOG.info("  === Trying readall ===")
-                body = json.dumps({"requestAttr": "readall"})
-                encrypted = aes_ctr_encrypt(session_key, device_random, body.encode())
-                for data_url in [f"{base}/deviceid/read", endpoint]:
-                    LOG.info("    POST readall to %s (%dB)", data_url, len(encrypted))
-                    try:
-                        async with asyncio.timeout(timeout):
-                            r = await session.post(
-                                data_url, data=encrypted,
-                                headers={"content-type": "application/x-protocomm"},
-                            )
-                            raw = await r.read()
-                        LOG.info("    → HTTP %d, %dB", r.status, len(raw))
-                        if raw:
-                            LOG.info("    hex: %s", _hex(raw, 256))
-                            try:
-                                decrypted = aes_ctr_encrypt(session_key, device_random, raw)
-                                text = decrypted.decode(errors="replace")
-                                LOG.info("    Decrypted: %.500s", text)
-                            except Exception as exc:
-                                LOG.info("    Decrypt failed: %s", exc)
-                    except Exception as exc:
-                        LOG.info("    POST readall failed: %s", exc)
-
-                return True
-            else:
-                LOG.info("    ✗ Verification mismatch")
-
-    LOG.info("")
-    LOG.info("All PoP candidates exhausted on all endpoints.")
+            LOG.info("  %s: FAILED — %s", proto.name, exc)
     return False
 
 
@@ -372,22 +182,30 @@ async def run_diagnostics(host: str, port: int, euid: str, timeout: int) -> None
         LOG.info("")
 
         if aes_ok:
-            LOG.info("✓ Gateway works with legacy AES-CBC — no new protocol needed.")
-            LOG.info("  If you see this but the integration still fails, the issue")
-            LOG.info("  is elsewhere. Open an issue with this full output.")
+            LOG.info("✓ Gateway works with legacy AES-CBC.")
+            LOG.info("=" * 72)
+            LOG.info("  RESULT: Protocol auto-detection SUCCEEDED")
+            LOG.info("=" * 72)
             return
 
-        # Phase 2: Security1
-        sec1_ok = await _probe_security1(session, base, euid, timeout)
+        # Phase 2: new AES-CBC (universal key)
+        new_ok = await _probe_new_aes_cbc(session, base, timeout)
         LOG.info("")
+
+        if new_ok:
+            LOG.info("✓ Gateway works with new-firmware AES-CBC (universal key).")
+            LOG.info("=" * 72)
+            LOG.info("  RESULT: Protocol auto-detection SUCCEEDED")
+            LOG.info("=" * 72)
+            return
 
         # Phase 3: determinism
         await _probe_determinism(session, base, timeout)
         LOG.info("")
 
     LOG.info("=" * 72)
-    if sec1_ok:
-        LOG.info("  RESULT: Security1 handshake SUCCEEDED")
+    if aes_ok or new_ok:
+        LOG.info("  RESULT: Protocol auto-detection SUCCEEDED")
     else:
         LOG.info("  RESULT: No protocol worked. Please share this FULL output at:")
         LOG.info("  https://github.com/leonardpitzu/homeassistant_salus/issues/3")
@@ -396,7 +214,7 @@ async def run_diagnostics(host: str, port: int, euid: str, timeout: int) -> None
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Salus iT600 gateway Security1 diagnostic tool"
+        description="Salus iT600 gateway diagnostic tool"
     )
     parser.add_argument("--host", required=True, help="Gateway IP address")
     parser.add_argument("--port", type=int, default=80, help="Gateway port (default: 80)")

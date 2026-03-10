@@ -12,10 +12,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from custom_components.salus.protocol_new_aes_cbc import (
-    NewAesCbcProtocol,
-    _KEY_RAW,
-    _KEY_256,
     _IV_LENGTH,
+    _KEY_256,
+    _KEY_RAW,
+    NewAesCbcProtocol,
 )
 
 
@@ -117,13 +117,13 @@ class TestNewAesCbcEncryptDecrypt:
     def test_aes128_cannot_decrypt_aes256(self):
         """AES-128 and AES-256 are not interchangeable."""
         ct = NewAesCbcProtocol(aes256=True).encrypt("mismatch")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             NewAesCbcProtocol(aes256=False).decrypt(ct)
 
     def test_aes256_cannot_decrypt_aes128(self):
         """AES-256 and AES-128 are not interchangeable."""
         ct = NewAesCbcProtocol(aes256=False).encrypt("mismatch")
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             NewAesCbcProtocol(aes256=True).decrypt(ct)
 
     def test_decrypt_too_short_raises(self, proto):
@@ -137,7 +137,7 @@ class TestNewAesCbcEncryptDecrypt:
     def test_decrypt_corrupted_ciphertext_raises(self, proto):
         ct = proto.encrypt("hello")
         corrupted = ct[:_IV_LENGTH] + bytes(len(ct) - _IV_LENGTH)
-        with pytest.raises(Exception):
+        with pytest.raises(ValueError):
             proto.decrypt(corrupted)
 
 
