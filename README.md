@@ -1,6 +1,6 @@
 # Salus iT600 for Home Assistant
 
-A custom [Home Assistant](https://www.home-assistant.io/) integration that lets you control and monitor your [Salus iT600](https://salus-controls.com/) smart home devices **locally** through the UGE600 universal gateway — thermostats, smart plugs, roller shutters, sensors, and more, all without cloud dependency.
+A custom [Home Assistant](https://www.home-assistant.io/) integration that lets you control and monitor your [Salus iT600](https://salus-controls.com/) smart home devices **locally** through the UGE600 or UG800 gateway — thermostats, smart plugs, roller shutters, sensors, and more, all without cloud dependency.
 
 ## Features
 
@@ -27,7 +27,7 @@ One climate entity per thermostat connected to the gateway. Two thermostat famil
 |---|---|
 | **Window / Door** | Open/closed state (SW600, OS600) |
 | **Water leak** | Moisture detection (WLS600) |
-| **Smoke** | Smoke alarm (SmokeSensor-EM, SD600) |
+| **Smoke** | Smoke alarm (SmokeSensor-EM) |
 | **Low battery** | Battery warning for wireless sensors |
 | **Thermostat problem** | Aggregated thermostat error flags with human-readable descriptions as attributes |
 | **Battery problem** | Battery-specific thermostat error indicator |
@@ -68,39 +68,38 @@ One lock entity per thermostat that supports child lock. Allows **locking/unlock
 
 Data is polled every 30 seconds. All communication is local over your LAN.
 
-## Encryption / firmware changes
+## Encryption & protocol support
 
-Salus gateways encrypt all local API traffic. A recent firmware update has changed the encryption protocol entirely. The integration currently supports the legacy protocol; support for the new protocol is under investigation.
+Salus gateways encrypt all local API traffic. Different gateway models and firmware versions use different encryption protocols. The integration **auto-detects** the correct protocol by trying each one in order during connection.
 
-|  | Legacy (AES-CBC) | New firmware (under investigation) |
+### Supported protocols
+
+|  | Legacy AES-CBC | AES-CCM (newer firmware) |
 |---|---|---|
-| **Affected gateways** | UGE600, older UG800 firmware | UG800 with firmware ≥ 2025-07-15 |
-| **Cipher** | AES-256-CBC (or AES-128-CBC) | AES-CCM (authenticated encryption) |
-| **Key derivation** | `MD5("Salus-{euid}")` — static, derived from the gateway EUID | ECDH key exchange (`secp256r1`) → session key derivation |
-| **IV / nonce** | Static, all zeros | Per-message nonce (part of AES-CCM) |
-| **Padding** | PKCS7 | None (AES-CCM handles arbitrary lengths) |
-| **Session setup** | None — key is static | Multi-step handshake (`setup0Request` / `setup0Response`) exchanging device public keys and randoms |
-| **Framing** | Plain HTTP body | Encrypted core + variable-length trailer: `[prefix][sequence_byte][0xFD][check_hi][check_lo]` |
-| **Sequence tracking** | None | Incrementing sequence byte per request |
+| **Gateways** | UGE600, older UG800 firmware | UG800 with newer firmware |
+| **Cipher** | AES-256-CBC (fallback: AES-128-CBC) | AES-256-CCM (authenticated encryption) |
+| **Key derivation** | `MD5("Salus-{euid}")` — static, derived from the gateway EUID | EUID bytes + hardcoded suffix — 32-byte key derived from the gateway EUID |
+| **IV / nonce** | Fixed 16-byte IV | 8-byte random nonce (3 random + 2-byte counter + 3-byte timestamp) |
+| **Authentication** | None | 8-byte MAC tag (CBC-MAC) |
+| **Padding** | PKCS7 | None (CCM handles arbitrary lengths) |
+| **Wire format** | Block-aligned encrypted HTTP body | `[ciphertext + 8-byte MAC][8-byte nonce]` |
 
-### What we know so far
+### Protocol auto-detection
 
-- Sending a legacy AES-CBC encrypted payload to an updated gateway returns a **33-byte reject frame** (32 bytes of opaque data + 1-byte trailer `0xAE`). This is not an encrypted response — it is a status/rejection indicator.
-- The decryptable portion of any gateway response is the block-aligned prefix: `response[0 : len - (len % 16)]`. The remaining bytes form the trailer.
-- **Exact replay** of captured request frames from the official Salus Smart Home app succeeds — the gateway returns full encrypted responses. However, re-encrypting the same plaintext with the old AES-CBC key and appending the captured trailer is rejected, confirming the encryption key itself has changed.
-- Evidence from the Android APK references `secp256r1`, `cipherSecretKey`, `Device public key`, `Device random`, and `aes_ccm`, strongly indicating an **ECDH + AES-CCM** scheme.
+The gateway connection tries protocols in this order:
 
-### Current status
+1. **AES-256-CBC** — legacy iT600 / UGE600 gateways
+2. **AES-128-CBC** — intermediate firmware variant
+3. **AES-CCM** — newer UG800 firmware
 
-| What | Status |
+If a protocol is rejected the integration moves to the next one automatically. A rejected attempt is identified by a characteristic 33-byte reject frame (trailer byte `0xAE`).
+
+### Status
+
+| Protocol | Status |
 |---|---|
-| Legacy AES-CBC gateways | **Fully supported** |
-| Detecting new-firmware reject frame | **Working** — the integration recognises the 33-byte reject and logs it clearly |
-| New ECDH + AES-CCM handshake | **Not yet implemented** — reverse engineering in progress |
-| Replaying captured new-protocol frames | **Confirmed working** in research tooling |
-| Generating new valid encrypted requests | **Not yet possible** — key exchange flow still being reconstructed |
-
-If your gateway has received the new firmware and the integration can no longer connect, there is unfortunately no workaround yet. Progress is tracked in [issue #81](https://github.com/epoplavskis/homeassistant_salus/issues/81). Contributions and packet captures are welcome.
+| Legacy AES-CBC (iT600 / UGE600) | **Fully supported** — tested on real hardware |
+| AES-CCM (UG800) | **Implemented** — reverse-engineered from APK v0.116.0; awaiting real-hardware validation |
 
 ## Debugging
 
