@@ -18,8 +18,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
-import time
 from typing import Any
 
 import aiohttp
@@ -28,8 +26,6 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .protocol import GatewayProtocol, parse_frame_33
-
-_LOGGER = logging.getLogger(__name__)
 
 _IV = bytes(
     [0x88, 0xA6, 0xB0, 0x79, 0x5D, 0x85, 0xDB, 0xFC,
@@ -52,73 +48,25 @@ class AesCbcProtocol(GatewayProtocol):
     def name(self) -> str:
         return "AES-128-CBC" if self._aes128 else "AES-256-CBC"
 
-    @property
-    def key_fingerprint(self) -> str:
-        """Short hex fingerprint of the key — useful in debug logs."""
-        return hashlib.md5(self._key).hexdigest()[:8]
-
     def encrypt(self, plaintext: str) -> bytes:
         """Encrypt a UTF-8 string with AES-CBC + PKCS7 padding."""
         encryptor = self._cipher.encryptor()
         padder = padding.PKCS7(128).padder()
         padded: bytes = padder.update(plaintext.encode()) + padder.finalize()
-        ct = encryptor.update(padded) + encryptor.finalize()
-        _LOGGER.debug(
-            "[%s] encrypt: %d bytes plaintext → %d bytes ciphertext "
-            "(key_fp=%s, ct=%s)",
-            self.name, len(plaintext), len(ct),
-            self.key_fingerprint,
-            ct.hex() if len(ct) <= 128
-            else f"{ct[:64].hex()}...({len(ct)}B)",
-        )
-        return ct
+        return encryptor.update(padded) + encryptor.finalize()
 
     def decrypt(self, ciphertext: bytes) -> str:
         """Decrypt AES-CBC cipher bytes, strip PKCS7 padding, return UTF-8."""
-        _LOGGER.debug(
-            "[%s] decrypt: %d bytes ciphertext (block_aligned=%s, key_fp=%s)",
-            self.name, len(ciphertext),
-            len(ciphertext) % 16 == 0,
-            self.key_fingerprint,
-        )
-        try:
-            decryptor = self._cipher.decryptor()
-            padded: bytes = decryptor.update(ciphertext) + decryptor.finalize()
-        except Exception as exc:
-            _LOGGER.debug(
-                "[%s] decrypt: AES decryption failed: %s — "
-                "raw first 64 bytes: %s",
-                self.name, exc, ciphertext[:64].hex(),
-            )
-            raise
+        decryptor = self._cipher.decryptor()
+        padded: bytes = decryptor.update(ciphertext) + decryptor.finalize()
+
+        unpadder = padding.PKCS7(128).unpadder()
+        plain: bytes = unpadder.update(padded) + unpadder.finalize()
 
         try:
-            unpadder = padding.PKCS7(128).unpadder()
-            plain: bytes = unpadder.update(padded) + unpadder.finalize()
-        except ValueError as exc:
-            _LOGGER.debug(
-                "[%s] decrypt: PKCS7 unpadding failed: %s — "
-                "last decrypted block hex: %s",
-                self.name, exc,
-                padded[-16:].hex() if len(padded) >= 16 else padded.hex(),
-            )
-            raise
-
-        try:
-            text = plain.decode()
+            return plain.decode()
         except UnicodeDecodeError as exc:
-            _LOGGER.debug(
-                "[%s] decrypt: UTF-8 decode failed: %s — "
-                "decrypted bytes (first 128): %s",
-                self.name, exc, plain[:128].hex(),
-            )
             raise ValueError(f"Decrypted data is not valid UTF-8: {exc}") from exc
-
-        _LOGGER.debug(
-            "[%s] decrypt: success, %d chars plaintext",
-            self.name, len(text),
-        )
-        return text
 
     def wrap_request(self, body_json: str) -> bytes:
         """Encrypt the JSON body — no additional framing for AES-CBC."""
@@ -128,11 +76,6 @@ class AesCbcProtocol(GatewayProtocol):
         """Strip non-block-aligned trailer, decrypt, return JSON string."""
         remainder = len(raw) % 16
         if remainder:
-            _LOGGER.debug(
-                "[%s] unwrap: trimming %d non-block-aligned trailing "
-                "bytes from %d-byte response",
-                self.name, remainder, len(raw),
-            )
             raw = raw[: len(raw) - remainder]
         return self.decrypt(raw)
 
@@ -148,15 +91,6 @@ class AesCbcProtocol(GatewayProtocol):
         body = json.dumps({"requestAttr": "readall"})
         encrypted = self.encrypt(body)
 
-        _LOGGER.debug(
-            "[%s] POST %s (%d→%d bytes, key_fp=%s, sent=%s)",
-            self.name, url, len(body), len(encrypted),
-            self.key_fingerprint,
-            encrypted.hex() if len(encrypted) <= 256
-            else f"{encrypted[:128].hex()}...({len(encrypted)}B)",
-        )
-
-        t0 = time.monotonic()
         async with asyncio.timeout(timeout):
             resp = await session.post(
                 url,
@@ -164,23 +98,6 @@ class AesCbcProtocol(GatewayProtocol):
                 headers={"content-type": "application/json"},
             )
             raw = await resp.read()
-        elapsed_ms = (time.monotonic() - t0) * 1000
-
-        resp_headers = {
-            k: v for k, v in resp.headers.items()
-            if k.lower() in (
-                "server", "content-type", "content-length",
-                "x-powered-by", "www-authenticate",
-            )
-        }
-        _LOGGER.debug(
-            "[%s] Response: HTTP %s, %d bytes, %.0fms, "
-            "headers=%s, hex=%s",
-            self.name, resp.status, len(raw), elapsed_ms,
-            resp_headers,
-            raw.hex() if len(raw) <= 512
-            else f"{raw[:256].hex()}...({len(raw)} total)",
-        )
 
         if resp.status != 200:
             raise ValueError(f"HTTP {resp.status}")
@@ -188,12 +105,6 @@ class AesCbcProtocol(GatewayProtocol):
         # Detect 33-byte frames (reject or new-protocol) before decryption.
         frame = parse_frame_33(raw)
         if frame is not None:
-            _LOGGER.debug(
-                "[%s] 33-byte frame: type=%s, counter=%d, "
-                "tag=%s, payload=%s",
-                self.name, frame.trailer_name, frame.counter,
-                frame.tag.hex(), frame.payload.hex(),
-            )
             if frame.is_reject:
                 raise ValueError(
                     "Gateway returned a reject frame (0xAE) — "
@@ -205,9 +116,6 @@ class AesCbcProtocol(GatewayProtocol):
                 f"firmware uses a newer protocol"
             )
 
-        # Heuristic analysis before attempting decryption.
-        _log_response_heuristics(self.name, raw)
-
         try:
             text = self.unwrap_response(raw)
         except Exception as exc:
@@ -218,46 +126,14 @@ class AesCbcProtocol(GatewayProtocol):
         try:
             result = json.loads(text)
         except json.JSONDecodeError as exc:
-            _LOGGER.debug(
-                "[%s] Decrypted text is not valid JSON (first 200 chars): %r",
-                self.name, text[:200],
-            )
             raise ValueError(
                 f"Decrypted response is not valid JSON: {exc}"
             ) from exc
 
         if result.get("status") != "success":
-            _LOGGER.debug(
-                "[%s] Gateway returned status=%r (full response: %.500s)",
-                self.name, result.get("status"), text,
-            )
             raise ValueError(f"status={result.get('status')}")
 
         return result
-
-
-def _log_response_heuristics(proto_name: str, raw: bytes) -> None:
-    """Log heuristic properties of *raw* to help diagnose wrong-key scenarios."""
-    block_aligned = len(raw) % 16 == 0
-    try:
-        text = raw.decode("utf-8")
-        looks_like_json = text.lstrip().startswith("{") or text.lstrip().startswith("[")
-        is_ascii = all(32 <= b < 127 or b in (9, 10, 13) for b in raw)
-    except UnicodeDecodeError:
-        looks_like_json = False
-        is_ascii = False
-
-    _LOGGER.debug(
-        "[%s] Response heuristics: %d bytes, block_aligned=%s, "
-        "is_ascii=%s, looks_like_json=%s",
-        proto_name, len(raw), block_aligned, is_ascii, looks_like_json,
-    )
-    if looks_like_json:
-        _LOGGER.debug(
-            "[%s] WARNING: response looks like unencrypted JSON — "
-            "gateway may not be encrypting at all. First 200 bytes: %r",
-            proto_name, raw[:200].decode(errors="replace"),
-        )
 
 
 # Backward-compatible alias used throughout the codebase.

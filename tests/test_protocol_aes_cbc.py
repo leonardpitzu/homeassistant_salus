@@ -38,10 +38,6 @@ class TestAesCbcProtocolAes256:
         proto = AesCbcProtocol(self.EUID)
         assert len(proto._key) == 32
 
-    def test_key_fingerprint(self):
-        proto = AesCbcProtocol(self.EUID)
-        assert len(proto.key_fingerprint) == 8
-
     def test_encrypt_returns_bytes(self):
         proto = AesCbcProtocol(self.EUID)
         assert isinstance(proto.encrypt("hello"), bytes)

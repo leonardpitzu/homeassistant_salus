@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import time
 from typing import Any, Callable, Awaitable
 
 import aiohttp
@@ -81,13 +80,11 @@ class IT600Gateway:
         port: int = 80,
         request_timeout: int = 5,
         session: aiohttp.ClientSession | None = None,
-        debug: bool = False,
     ) -> None:
         self._euid = euid
         self._host = host
         self._port = port
         self._request_timeout = request_timeout
-        self._debug = debug
         self._lock = asyncio.Lock()
 
         # Active protocol — set during connect()
@@ -131,8 +128,8 @@ class IT600Gateway:
         """
         euid_masked = self._euid[:4] + "…" + self._euid[-4:]
         _LOGGER.debug(
-            "Connecting to %s:%s (EUID %s, %d protocol candidates)",
-            self._host, self._port, euid_masked, 4,
+            "Connecting to gateway at %s:%s (EUID %s)",
+            self._host, self._port, euid_masked,
         )
 
         if self._session is None:
@@ -145,16 +142,15 @@ class IT600Gateway:
             AesCbcProtocol(self._euid),
             AesCbcProtocol(self._euid, aes128=True),
             AesCcmProtocol(self._euid),
-            NewAesCbcProtocol(),
+            # NewAesCbcProtocol() — disabled; universal fixed key likely
+            # unused.  Remove entirely once confirmed by UG800 users.
         ]
 
         saw_reject = False
         saw_new_protocol = False
-        attempt_log: list[str] = []
 
         for proto in candidates:
-            _LOGGER.debug("Trying protocol %s …", proto.name)
-            t0 = time.monotonic()
+            _LOGGER.debug("Trying protocol: %s", proto.name)
             try:
                 result = await proto.connect(
                     self._session,
@@ -162,33 +158,17 @@ class IT600Gateway:
                     self._port,
                     self._request_timeout,
                 )
-                elapsed_ms = (time.monotonic() - t0) * 1000
                 self._protocol = proto
-                _LOGGER.debug(
-                    "Protocol %s: success (%.0fms)",
-                    proto.name, elapsed_ms,
-                )
-                attempt_log.append(f"{proto.name}: success ({elapsed_ms:.0f}ms)")
+                _LOGGER.debug("Protocol %s: success", proto.name)
                 break
             except NotImplementedError as exc:
-                elapsed_ms = (time.monotonic() - t0) * 1000
                 _LOGGER.debug(
-                    "Protocol %s: not implemented (%.0fms): %s",
-                    proto.name, elapsed_ms, exc,
-                )
-                attempt_log.append(
-                    f"{proto.name}: not implemented ({elapsed_ms:.0f}ms) — {exc}"
+                    "Protocol %s: not implemented — %s", proto.name, exc,
                 )
             except Exception as exc:
-                elapsed_ms = (time.monotonic() - t0) * 1000
                 msg = str(exc)
-                exc_type = type(exc).__name__
                 _LOGGER.debug(
-                    "Protocol %s failed (%.0fms, %s): %s",
-                    proto.name, elapsed_ms, exc_type, msg,
-                )
-                attempt_log.append(
-                    f"{proto.name}: {exc_type} ({elapsed_ms:.0f}ms) — {msg}"
+                    "Protocol %s: failed — %s", proto.name, msg,
                 )
                 if "reject frame" in msg.lower():
                     saw_reject = True
@@ -200,75 +180,29 @@ class IT600Gateway:
             mac = self._extract_gateway_mac(result)
             if mac is not None:
                 _LOGGER.debug(
-                    "Connected using %s, MAC: %s",
-                    self._protocol.name, mac,
+                    "Connected via %s, MAC: %s", self._protocol.name, mac,
                 )
                 return mac
 
         # --- All protocols failed — run diagnostics --------------------
-        _LOGGER.debug("All protocols failed — running diagnostics")
 
-        # Probe root URL for reachability + server identity
-        probe_info: str | None = None
+        # Probe root URL to confirm reachability
         try:
             async with asyncio.timeout(self._request_timeout):
                 probe = await self._session.get(
                     f"http://{self._host}:{self._port}/"
                 )
-                probe_body = await probe.read()
-                headers = {
-                    k: v for k, v in probe.headers.items()
-                    if k.lower() in (
-                        "server", "content-type", "x-powered-by",
-                        "www-authenticate",
-                    )
-                }
-                probe_info = (
-                    f"HTTP {probe.status}, {len(probe_body)} bytes, "
-                    f"headers={headers}, "
-                    f"body={probe_body[:200].decode(errors='replace')!r}"
-                )
-                _LOGGER.debug("Probe /: %s", probe_info)
+                await probe.read()
         except Exception as exc:
-            _LOGGER.debug("Probe / failed: %s", exc)
             raise IT600ConnectionError(
                 "Cannot reach iT600 gateway — check host / IP address"
             ) from exc
 
-        # --- Diagnostic summary (single block a user can copy-paste) ---
-        summary_lines = [
-            "",
-            "╔══════════════════════════════════════════════════════════════╗",
-            "║           Salus gateway diagnostic summary                 ║",
-            "╚══════════════════════════════════════════════════════════════╝",
-            f"  Host ............: {self._host}:{self._port}",
-            f"  EUID ............: {euid_masked}",
-            f"  Reject frames ...: {saw_reject}",
-            f"  New-proto frames : {saw_new_protocol}",
-            "  Protocol attempts:",
-        ]
-        for entry in attempt_log:
-            summary_lines.append(f"    • {entry}")
-        if probe_info:
-            summary_lines.append(f"  Root probe ......: {probe_info}")
-        summary_lines.append("")
-        summary_lines.append(
-            "  Please include ALL the debug logs from "
-            "custom_components.salus when reporting issues at"
-        )
-        summary_lines.append(
-            "  https://github.com/leonardpitzu/homeassistant_salus/issues/3"
-        )
-        summary_lines.append(
-            "══════════════════════════════════════════════════════════════"
-        )
-        _LOGGER.warning("\n".join(summary_lines))
-
         if saw_reject or saw_new_protocol:
             raise IT600UnsupportedFirmwareError(
-                "Gateway reachable but new-firmware protocol failed — "
-                "see the WARNING log above for full diagnostic report.  "
-                "See https://github.com/leonardpitzu/homeassistant_salus/issues/3"
+                "Gateway reachable but uses an unsupported encryption protocol. "
+                "Enable debug logging for custom_components.salus and report at "
+                "https://github.com/leonardpitzu/homeassistant_salus/issues"
             )
 
         raise IT600AuthenticationError(
@@ -291,7 +225,6 @@ class IT600Gateway:
             None,
         )
         if gateway is None:
-            _LOGGER.debug("No gateway info in %d device entries", len(devices))
             return None
         return gateway["sGateway"]["NetworkLANMAC"]
 
@@ -388,8 +321,6 @@ class IT600Gateway:
             except Exception:
                 _LOGGER.exception("Failed to parse gateway %s", unique_id)
 
-        _LOGGER.debug("Refreshed gateway device")
-
     # ---- covers ----
 
     async def _refresh_cover_devices(
@@ -465,7 +396,6 @@ class IT600Gateway:
                 _LOGGER.exception("Failed to poll cover %s", unique_id)
 
         self._cover_devices = local
-        _LOGGER.debug("Refreshed %s cover devices", len(local))
 
     # ---- switches ----
 
@@ -571,7 +501,6 @@ class IT600Gateway:
 
         self._switch_devices = local
         self._energy_sensor_devices = energy_local
-        _LOGGER.debug("Refreshed %s switch devices", len(local))
 
     # ---- sensors ----
 
@@ -683,7 +612,6 @@ class IT600Gateway:
                 _LOGGER.exception("Failed to poll sensor %s", unique_id)
 
         self._sensor_devices = local
-        _LOGGER.debug("Refreshed %s sensor devices", len(local))
 
     # ---- binary sensors ----
 
@@ -800,9 +728,6 @@ class IT600Gateway:
                 )
 
         self._binary_sensor_devices = local
-        _LOGGER.debug(
-            "Refreshed %s binary sensor devices", len(local)
-        )
 
     # ---- climate ----
 
@@ -1150,7 +1075,6 @@ class IT600Gateway:
         self._battery_sensor_devices = battery_local
         self._humidity_sensor_devices = humidity_local
         self._error_binary_sensor_devices = error_local
-        _LOGGER.debug("Refreshed %s climate devices", len(local))
 
     # ------------------------------------------------------------------
     #  Callbacks
@@ -1534,18 +1458,7 @@ class IT600Gateway:
             body_json = json.dumps(request_body)
             encrypted_body = self._protocol.wrap_request(body_json)
 
-            _LOGGER.debug(
-                "[%s] POST %s (%d bytes plaintext, %d bytes encrypted, "
-                "body=%.300s)",
-                self._protocol.name,
-                url,
-                len(body_json),
-                len(encrypted_body),
-                body_json,
-            )
-
             try:
-                t0 = time.monotonic()
                 async with asyncio.timeout(self._request_timeout):
                     resp = await self._session.post(
                         url,
@@ -1554,16 +1467,9 @@ class IT600Gateway:
                     )
                     raw = await resp.read()
 
-                elapsed_ms = (time.monotonic() - t0) * 1000
-
                 _LOGGER.debug(
-                    "[%s] Response: HTTP %s, %d bytes, %.0fms, hex=%s",
-                    self._protocol.name,
-                    resp.status,
-                    len(raw),
-                    elapsed_ms,
-                    raw.hex() if len(raw) <= 512 else
-                    f"{raw[:256].hex()}...({len(raw)} total)",
+                    "Gateway %s → HTTP %s (%d bytes)",
+                    command, resp.status, len(raw),
                 )
 
                 if resp.status != 200:
@@ -1574,20 +1480,9 @@ class IT600Gateway:
                 try:
                     decrypted = self._protocol.unwrap_response(raw)
                 except (ValueError, RuntimeError) as exc:
-                    _LOGGER.debug(
-                        "[%s] Decryption failed for %d-byte response: %s",
-                        self._protocol.name, len(raw), exc,
-                    )
                     raise IT600CommandError(
                         "Failed to decrypt gateway response"
                     ) from exc
-
-                _LOGGER.debug(
-                    "[%s] Decrypted (%d chars): %.500s",
-                    self._protocol.name,
-                    len(decrypted),
-                    decrypted,
-                )
 
                 result = json.loads(decrypted)
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 import voluptuous as vol
 
 from homeassistant import config_entries
@@ -17,8 +15,6 @@ from .exceptions import (
     IT600UnsupportedFirmwareError,
 )
 from .gateway import IT600Gateway
-
-_LOGGER = logging.getLogger(__name__)
 
 CONF_FLOW_TYPE = "config_flow_device"
 CONF_USER = "user"

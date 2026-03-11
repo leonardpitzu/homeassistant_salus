@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -13,8 +11,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import DOMAIN
 from .entity import SalusEntity
 from .gateway import IT600Gateway
-
-_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(

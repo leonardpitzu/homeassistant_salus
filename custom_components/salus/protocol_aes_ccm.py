@@ -21,9 +21,7 @@ MAC tag: 64 bits (8 bytes).  No AAD.
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import logging
 import os
 import struct
 import time
@@ -34,8 +32,6 @@ import aiohttp
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
 from .protocol import GatewayProtocol, parse_frame_33
-
-_LOGGER = logging.getLogger(__name__)
 
 _HARDCODED_SUFFIX = b"9a4ba190ac2b5139b32c3528"  # 24 ASCII bytes
 _MAC_SIZE = 8   # bytes (64-bit MAC tag)
@@ -79,11 +75,6 @@ class AesCcmProtocol(GatewayProtocol):
     def name(self) -> str:
         return "AES-256-CCM (UG800)"
 
-    @property
-    def key_fingerprint(self) -> str:
-        """Short hex fingerprint of the key — useful in debug logs."""
-        return hashlib.md5(self._key).hexdigest()[:8]
-
     def encrypt(self, plaintext: str) -> bytes:
         """Encrypt plaintext with AES-256-CCM.
 
@@ -92,12 +83,7 @@ class AesCcmProtocol(GatewayProtocol):
         nonce = _build_nonce(self._counter)
         self._counter = (self._counter + 1) & 0xFFFF
         ct_and_tag = self._aesccm.encrypt(nonce, plaintext.encode(), None)
-        wire = ct_and_tag + nonce
-        _LOGGER.debug(
-            "[%s] encrypt: %d chars → %d wire bytes (nonce=%s)",
-            self.name, len(plaintext), len(wire), nonce.hex(),
-        )
-        return wire
+        return ct_and_tag + nonce
 
     def decrypt(self, data: bytes) -> str:
         """Decrypt wire bytes back into a UTF-8 JSON string.
@@ -111,10 +97,6 @@ class AesCcmProtocol(GatewayProtocol):
             )
         ct_and_tag = data[:-_NONCE_SIZE]
         nonce = data[-_NONCE_SIZE:]
-        _LOGGER.debug(
-            "[%s] decrypt: %d wire bytes (nonce=%s, ct+mac=%d)",
-            self.name, len(data), nonce.hex(), len(ct_and_tag),
-        )
         plaintext_bytes = self._aesccm.decrypt(nonce, ct_and_tag, None)
         return plaintext_bytes.decode()
 
@@ -136,22 +118,8 @@ class AesCcmProtocol(GatewayProtocol):
         """Send an encrypted readall and return the parsed response."""
         url = f"http://{host}:{port}/deviceid/read"
         body = json.dumps({"requestAttr": "readall"})
-
-        _LOGGER.debug(
-            "[%s] key_fp=%s, euid_len=%d, key_len=%d",
-            self.name, self.key_fingerprint,
-            len(bytes.fromhex(self._euid.strip())), len(self._key),
-        )
-
         encrypted = self.encrypt(body)
 
-        _LOGGER.debug(
-            "[%s] POST %s (%d→%d bytes, nonce=%s)",
-            self.name, url, len(body), len(encrypted),
-            encrypted[-_NONCE_SIZE:].hex(),
-        )
-
-        t0 = time.monotonic()
         async with asyncio.timeout(timeout):
             resp = await session.post(
                 url,
@@ -159,26 +127,12 @@ class AesCcmProtocol(GatewayProtocol):
                 headers={"content-type": "application/json"},
             )
             raw = await resp.read()
-        elapsed_ms = (time.monotonic() - t0) * 1000
-
-        _LOGGER.debug(
-            "[%s] Response: HTTP %s, %d bytes, %.0fms, hex=%s",
-            self.name, resp.status, len(raw), elapsed_ms,
-            raw.hex() if len(raw) <= 512
-            else f"{raw[:256].hex()}...({len(raw)} total)",
-        )
 
         if resp.status != 200:
             raise ValueError(f"HTTP {resp.status}")
 
         frame = parse_frame_33(raw)
         if frame is not None:
-            _LOGGER.debug(
-                "[%s] 33-byte frame: type=%s, counter=%d, "
-                "tag=%s, payload=%s",
-                self.name, frame.trailer_name, frame.counter,
-                frame.tag.hex(), frame.payload.hex(),
-            )
             if frame.is_reject:
                 raise ValueError(
                     "Gateway returned a reject frame (0xAE)"
@@ -198,19 +152,11 @@ class AesCcmProtocol(GatewayProtocol):
         try:
             result = json.loads(text)
         except json.JSONDecodeError as exc:
-            _LOGGER.debug(
-                "[%s] Decrypted text is not valid JSON (first 200 chars): %r",
-                self.name, text[:200],
-            )
             raise ValueError(
                 f"Decrypted response is not valid JSON: {exc}"
             ) from exc
 
         if result.get("status") != "success":
-            _LOGGER.debug(
-                "[%s] Unexpected response status: %r",
-                self.name, result.get("status"),
-            )
             raise ValueError(
                 f"Unexpected response status: {result.get('status')!r}"
             )

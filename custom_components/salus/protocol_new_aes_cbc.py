@@ -12,8 +12,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import time
 from typing import Any
 
 import aiohttp
@@ -22,8 +20,6 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .protocol import GatewayProtocol, parse_frame_33
-
-_LOGGER = logging.getLogger(__name__)
 
 _BLOCK_SIZE = 128  # bits
 
@@ -61,12 +57,7 @@ class NewAesCbcProtocol(GatewayProtocol):
         padder = padding.PKCS7(_BLOCK_SIZE).padder()
         padded: bytes = padder.update(plaintext.encode()) + padder.finalize()
         ct = encryptor.update(padded) + encryptor.finalize()
-        hex_ct = ct.hex()
-        _LOGGER.debug(
-            "[%s] encrypt: %d chars → %d hex chars",
-            self.name, len(plaintext), len(hex_ct),
-        )
-        return hex_ct
+        return ct.hex()
 
     def decrypt(self, hex_ct: str) -> str:
         """Decrypt a hex-encoded ciphertext string (Dart's ``decrypt16``).
@@ -78,34 +69,18 @@ class NewAesCbcProtocol(GatewayProtocol):
         except ValueError as exc:
             raise ValueError(f"Response is not valid hex: {exc}") from exc
 
-        _LOGGER.debug(
-            "[%s] decrypt: %d hex chars → %d bytes ciphertext",
-            self.name, len(hex_ct), len(ciphertext),
-        )
+        decryptor = self._cipher.decryptor()
+        padded: bytes = decryptor.update(ciphertext) + decryptor.finalize()
+
+        unpadder = padding.PKCS7(_BLOCK_SIZE).unpadder()
+        plain: bytes = unpadder.update(padded) + unpadder.finalize()
 
         try:
-            decryptor = self._cipher.decryptor()
-            padded: bytes = decryptor.update(ciphertext) + decryptor.finalize()
-        except Exception as exc:
-            _LOGGER.debug("[%s] AES decryption failed: %s", self.name, exc)
-            raise
-
-        try:
-            unpadder = padding.PKCS7(_BLOCK_SIZE).unpadder()
-            plain: bytes = unpadder.update(padded) + unpadder.finalize()
-        except ValueError as exc:
-            _LOGGER.debug("[%s] PKCS7 unpadding failed: %s", self.name, exc)
-            raise
-
-        try:
-            text = plain.decode()
+            return plain.decode()
         except UnicodeDecodeError as exc:
             raise ValueError(
                 f"Decrypted data is not valid UTF-8: {exc}"
             ) from exc
-
-        _LOGGER.debug("[%s] decrypt: success, %d chars", self.name, len(text))
-        return text
 
     def wrap_request(self, body_json: str) -> str:
         """Encrypt the JSON body and return a hex string."""
@@ -126,18 +101,8 @@ class NewAesCbcProtocol(GatewayProtocol):
         url = f"http://{host}:{port}/deviceid/read"
         body = json.dumps({"requestAttr": "readall"})
         encrypted = self.encrypt(body)
-
         wire_bytes = encrypted.encode()
-        _LOGGER.debug(
-            "[%s] POST %s (%d chars → %d hex chars, wire=%d bytes)",
-            self.name, url, len(body), len(encrypted), len(wire_bytes),
-        )
-        _LOGGER.debug(
-            "[%s] request wire (first 200 bytes hex): %s",
-            self.name, wire_bytes[:200].hex(),
-        )
 
-        t0 = time.monotonic()
         async with asyncio.timeout(timeout):
             resp = await session.post(
                 url,
@@ -145,35 +110,13 @@ class NewAesCbcProtocol(GatewayProtocol):
                 headers={"content-type": "application/json"},
             )
             raw = await resp.read()
-        elapsed_ms = (time.monotonic() - t0) * 1000
-
-        resp_headers = {
-            k: v for k, v in resp.headers.items()
-            if k.lower() in ("server", "content-type", "content-length")
-        }
-        _LOGGER.debug(
-            "[%s] response: HTTP %d, %d bytes, %.0fms, headers=%s",
-            self.name, resp.status, len(raw), elapsed_ms, resp_headers,
-        )
-        _raw_sample = raw[:512].hex() if len(raw) <= 512 else (
-            f"{raw[:256].hex()}...({len(raw)} total)"
-        )
-        _LOGGER.debug(
-            "[%s] response body hex: %s",
-            self.name, _raw_sample,
-        )
 
         if resp.status != 200:
-            raise ValueError(f"HTTP {resp.status}: {raw[:100]!r}")
+            raise ValueError(f"HTTP {resp.status}")
 
         # Detect reject/new-protocol frames
         frame = parse_frame_33(raw)
         if frame:
-            _LOGGER.debug(
-                "[%s] 33-byte frame: type=%s, counter=%d, tag=%s, payload=%s",
-                self.name, frame.trailer_name, frame.counter,
-                frame.tag.hex(), frame.payload.hex(),
-            )
             if frame.trailer_name == "reject":
                 raise ValueError("Reject frame received")
             else:
@@ -183,27 +126,14 @@ class NewAesCbcProtocol(GatewayProtocol):
         try:
             response_text = raw.decode()
         except UnicodeDecodeError as exc:
-            _LOGGER.debug(
-                "[%s] response is not text (binary?) — first 128 bytes: %s",
-                self.name, raw[:128].hex(),
-            )
             raise ValueError(
                 f"Response is not text (expected hex string): {exc}"
             ) from exc
-
-        _LOGGER.debug(
-            "[%s] response text (first 200 chars): %s",
-            self.name, response_text[:200],
-        )
 
         try:
             decrypted = self.decrypt(response_text)
             result = json.loads(decrypted)
         except json.JSONDecodeError as exc:
-            _LOGGER.debug(
-                "[%s] decrypted text (not JSON): %.200s",
-                self.name, decrypted,
-            )
             raise ValueError(f"Response is not valid JSON: {exc}") from exc
         except ValueError:
             raise
@@ -211,8 +141,4 @@ class NewAesCbcProtocol(GatewayProtocol):
         if result.get("status") != "success":
             raise ValueError(f"Response status={result.get('status')}")
 
-        _LOGGER.debug(
-            "[%s] connect: success in %.2f ms, %d devices",
-            self.name, elapsed_ms, len(result.get("id", [])),
-        )
         return result

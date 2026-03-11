@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import logging
-
 from homeassistant.components.climate import (
     ClimateEntity,
     ClimateEntityFeature,
@@ -19,8 +17,6 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from .const import DOMAIN
 from .entity import SalusEntity
 from .gateway import IT600Gateway
-
-_LOGGER = logging.getLogger(__name__)
 
 _HVAC_ACTION_MAP: dict[str, HVACAction] = {
     "off": HVACAction.OFF,

@@ -2064,7 +2064,7 @@ class TestProtocolAutoDetect:
             return_value=not_impl,
         ):
             with pytest.raises(
-                IT600UnsupportedFirmwareError, match="new-firmware protocol failed"
+                IT600UnsupportedFirmwareError, match="unsupported encryption protocol"
             ):
                 await gw.connect()
 
@@ -2102,7 +2102,7 @@ class TestProtocolAutoDetect:
             return_value=not_impl,
         ):
             with pytest.raises(
-                IT600UnsupportedFirmwareError, match="new-firmware protocol failed"
+                IT600UnsupportedFirmwareError, match="unsupported encryption protocol"
             ):
                 await gw.connect()
 
