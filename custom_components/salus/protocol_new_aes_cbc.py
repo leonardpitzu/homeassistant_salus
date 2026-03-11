@@ -1,23 +1,11 @@
-"""AES-CBC protocol for new-firmware Salus iT600 gateways (>= 2025).
+"""AES-CBC protocol for new-firmware Salus UG800 gateways.
 
-New-firmware gateways use AES-CBC with a fixed universal key (named
-``GENERAL`` in the APK) and a random IV per message.
+UG800 uses a fixed universal AES-256 key and fixed IV.
 
-Key: hardcoded constant extracted from the Salus Smart Home APK
-     (``package:smart_home/encryption/enc.dart``).
-     The raw hex constant is 16 bytes.  The actual AES key size is
-     unknown (128-bit raw, or 256-bit zero-padded).  Both variants
-     are exposed so the gateway auto-detection can try each.
-IV:  random 16-byte vector generated per request, prepended to the wire
-     payload so the receiver can extract it for decryption.
-Padding: PKCS7, 128-bit block size.
-
-Wire format (both requests and responses):
-    [16-byte IV] + [AES-CBC ciphertext (PKCS7 padded)]
-
-The gateway still uses the same HTTP endpoints as the old firmware:
-    POST /deviceid/read   — encrypted ``{"requestAttr": "readall"}``
-    POST /deviceid/write  — encrypted command payload
+Key: UTF-8 encoded "54b544979a4ba190ac2b5139b32c3528" (32 ASCII bytes)
+IV:  UTF-8 encoded "be4480f9c146eaf9" (16 ASCII bytes)
+Wire format: hex-encoded ciphertext string (Encrypted.base16 in Dart)
+Padding: PKCS7 (block size 128 bits)
 """
 
 from __future__ import annotations
@@ -25,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any
 
@@ -38,132 +25,95 @@ from .protocol import GatewayProtocol, parse_frame_33
 
 _LOGGER = logging.getLogger(__name__)
 
-# Fixed key from the Salus Smart Home APK (enc.dart), named "GENERAL" in binary.
-_KEY_RAW = bytes.fromhex("54b544979a4ba190ac2b5139b32c3528")  # 16 bytes
-
-# AES-256 variant: zero-padded to 32 bytes (same pattern as old protocol).
-_KEY_256 = _KEY_RAW + bytes(16)
-
-_IV_LENGTH = 16
 _BLOCK_SIZE = 128  # bits
+
+# Fixed universal key+IV from blutter analysis of UG800 app.
+# The Dart code does: Key(Uint8List.fromList(Utf8Codec().encode("54b544...")))
+# This means the 32-char string is used as raw UTF-8 bytes (32 bytes for AES-256),
+# NOT hex-decoded to 16 bytes.
+_KEY = b"54b544979a4ba190ac2b5139b32c3528"  # 32 ASCII bytes → AES-256
+_IV = b"be4480f9c146eaf9"                    # 16 ASCII bytes → fixed IV
 
 
 class NewAesCbcProtocol(GatewayProtocol):
-    """AES-CBC protocol for new-firmware gateways (universal key, random IV).
+    """AES-CBC protocol for new-firmware UG800 gateways.
 
-    Parameters
-    ----------
-    aes256 : bool
-        If *True*, pad the 16-byte key to 32 bytes (AES-256).
-        If *False* (default), use the raw 16-byte key (AES-128).
+    Uses a fixed universal key and fixed IV.  Wire format is a hex-encoded
+    ciphertext string (matching ``Encrypted.base16`` in the Dart app).
     """
 
-    def __init__(self, *, aes256: bool = False) -> None:
-        self._aes256 = aes256
-        self._key = _KEY_256 if aes256 else _KEY_RAW
+    def __init__(self) -> None:
+        self._key = _KEY
+        self._iv = _IV
+        self._cipher = Cipher(algorithms.AES(self._key), modes.CBC(self._iv))
 
     @property
     def name(self) -> str:  # type: ignore[override]
-        return f"NewAES-{'256' if self._aes256 else '128'}-CBC"
+        return "NewAES-CBC (UG800)"
 
-    def encrypt(self, plaintext: str) -> bytes:
-        """Encrypt a UTF-8 string with AES-CBC + PKCS7 + random IV.
+    def encrypt(self, plaintext: str) -> str:
+        """Encrypt plaintext with AES-256-CBC + PKCS7.
 
-        Returns ``iv (16 bytes) || ciphertext``.
+        Returns the ciphertext as a hex string (matching Dart's
+        ``Encrypted.base16``).
         """
-        iv = os.urandom(_IV_LENGTH)
-        cipher = Cipher(algorithms.AES(self._key), modes.CBC(iv))
-        encryptor = cipher.encryptor()
+        encryptor = self._cipher.encryptor()
         padder = padding.PKCS7(_BLOCK_SIZE).padder()
         padded: bytes = padder.update(plaintext.encode()) + padder.finalize()
-        ciphertext = encryptor.update(padded) + encryptor.finalize()
-        wire = iv + ciphertext
+        ct = encryptor.update(padded) + encryptor.finalize()
+        hex_ct = ct.hex()
         _LOGGER.debug(
-            "[%s] encrypt: %d bytes plaintext → %d bytes wire "
-            "(iv=%s, ct=%s)",
-            self.name, len(plaintext), len(wire),
-            iv.hex(),
-            ciphertext.hex() if len(ciphertext) <= 128
-            else f"{ciphertext[:64].hex()}...({len(ciphertext)}B)",
+            "[%s] encrypt: %d chars → %d hex chars",
+            self.name, len(plaintext), len(hex_ct),
         )
-        return wire
+        return hex_ct
 
-    def decrypt(self, ciphertext: bytes) -> str:
-        """Decrypt ``iv (16 bytes) || ciphertext``, strip PKCS7, return UTF-8.
+    def decrypt(self, hex_ct: str) -> str:
+        """Decrypt a hex-encoded ciphertext string (Dart's ``decrypt16``).
 
-        Raises ``ValueError`` on padding or length errors.
+        Accepts the hex string as returned by the gateway.
         """
-        if len(ciphertext) <= _IV_LENGTH:
-            raise ValueError(
-                f"Ciphertext too short ({len(ciphertext)} bytes) — "
-                f"need at least {_IV_LENGTH + 1}"
-            )
-        iv = ciphertext[:_IV_LENGTH]
-        encrypted = ciphertext[_IV_LENGTH:]
-
-        remainder = len(encrypted) % 16
-        if remainder:
-            _LOGGER.debug(
-                "[%s] decrypt: trimming %d non-block-aligned trailing "
-                "bytes from %d-byte payload",
-                self.name, remainder, len(encrypted),
-            )
-            encrypted = encrypted[: len(encrypted) - remainder]
+        try:
+            ciphertext = bytes.fromhex(hex_ct)
+        except ValueError as exc:
+            raise ValueError(f"Response is not valid hex: {exc}") from exc
 
         _LOGGER.debug(
-            "[%s] decrypt: %d bytes total, iv=%s, %d bytes ciphertext "
-            "(block-aligned=%s)",
-            self.name, len(ciphertext), iv.hex(), len(encrypted),
-            len(encrypted) % 16 == 0,
+            "[%s] decrypt: %d hex chars → %d bytes ciphertext",
+            self.name, len(hex_ct), len(ciphertext),
         )
 
         try:
-            cipher = Cipher(algorithms.AES(self._key), modes.CBC(iv))
-            decryptor = cipher.decryptor()
-            padded: bytes = decryptor.update(encrypted) + decryptor.finalize()
+            decryptor = self._cipher.decryptor()
+            padded: bytes = decryptor.update(ciphertext) + decryptor.finalize()
         except Exception as exc:
-            _LOGGER.debug(
-                "[%s] decrypt: AES decryption failed: %s — "
-                "raw first 64 bytes: %s",
-                self.name, exc, encrypted[:64].hex(),
-            )
+            _LOGGER.debug("[%s] AES decryption failed: %s", self.name, exc)
             raise
 
         try:
             unpadder = padding.PKCS7(_BLOCK_SIZE).unpadder()
             plain: bytes = unpadder.update(padded) + unpadder.finalize()
         except ValueError as exc:
-            # PKCS7 padding invalid → almost certainly wrong key
-            _LOGGER.debug(
-                "[%s] decrypt: PKCS7 unpadding failed: %s — "
-                "last decrypted block hex: %s",
-                self.name, exc, padded[-16:].hex() if len(padded) >= 16 else padded.hex(),
-            )
+            _LOGGER.debug("[%s] PKCS7 unpadding failed: %s", self.name, exc)
             raise
 
         try:
             text = plain.decode()
         except UnicodeDecodeError as exc:
-            _LOGGER.debug(
-                "[%s] decrypt: UTF-8 decode failed: %s — "
-                "decrypted bytes (first 128): %s",
-                self.name, exc, plain[:128].hex(),
-            )
-            raise ValueError(f"Decrypted data is not valid UTF-8: {exc}") from exc
+            raise ValueError(
+                f"Decrypted data is not valid UTF-8: {exc}"
+            ) from exc
 
-        _LOGGER.debug(
-            "[%s] decrypt: success, %d chars plaintext",
-            self.name, len(text),
-        )
+        _LOGGER.debug("[%s] decrypt: success, %d chars", self.name, len(text))
         return text
 
-    def wrap_request(self, body_json: str) -> bytes:
-        """Encrypt the JSON body with a random IV."""
+    def wrap_request(self, body_json: str) -> str:
+        """Encrypt the JSON body and return a hex string."""
         return self.encrypt(body_json)
 
     def unwrap_response(self, raw: bytes) -> str:
-        """Decrypt a response (``iv || ciphertext``) and return JSON string."""
-        return self.decrypt(raw)
+        """Decode response bytes as a hex string and decrypt."""
+        return self.decrypt(raw.decode())
 
     async def connect(
         self,
@@ -177,19 +127,21 @@ class NewAesCbcProtocol(GatewayProtocol):
         body = json.dumps({"requestAttr": "readall"})
         encrypted = self.encrypt(body)
 
+        wire_bytes = encrypted.encode()
         _LOGGER.debug(
-            "[%s] POST %s (%d→%d bytes, key=%d-bit, sent=%s)",
-            self.name, url, len(body), len(encrypted),
-            len(self._key) * 8,
-            encrypted.hex() if len(encrypted) <= 256
-            else f"{encrypted[:128].hex()}...({len(encrypted)}B)",
+            "[%s] POST %s (%d chars → %d hex chars, wire=%d bytes)",
+            self.name, url, len(body), len(encrypted), len(wire_bytes),
+        )
+        _LOGGER.debug(
+            "[%s] request wire (first 200 bytes hex): %s",
+            self.name, wire_bytes[:200].hex(),
         )
 
         t0 = time.monotonic()
         async with asyncio.timeout(timeout):
             resp = await session.post(
                 url,
-                data=encrypted,
+                data=wire_bytes,
                 headers={"content-type": "application/json"},
             )
             raw = await resp.read()
@@ -197,88 +149,70 @@ class NewAesCbcProtocol(GatewayProtocol):
 
         resp_headers = {
             k: v for k, v in resp.headers.items()
-            if k.lower() in (
-                "server", "content-type", "content-length",
-                "x-powered-by", "www-authenticate",
-            )
+            if k.lower() in ("server", "content-type", "content-length")
         }
         _LOGGER.debug(
-            "[%s] Response: HTTP %s, %d bytes, %.0fms, "
-            "headers=%s, hex=%s",
-            self.name, resp.status, len(raw), elapsed_ms,
-            resp_headers,
-            raw.hex() if len(raw) <= 512
-            else f"{raw[:256].hex()}...({len(raw)} total)",
+            "[%s] response: HTTP %d, %d bytes, %.0fms, headers=%s",
+            self.name, resp.status, len(raw), elapsed_ms, resp_headers,
+        )
+        _raw_sample = raw[:512].hex() if len(raw) <= 512 else (
+            f"{raw[:256].hex()}...({len(raw)} total)"
+        )
+        _LOGGER.debug(
+            "[%s] response body hex: %s",
+            self.name, _raw_sample,
         )
 
         if resp.status != 200:
-            raise ValueError(f"HTTP {resp.status}")
+            raise ValueError(f"HTTP {resp.status}: {raw[:100]!r}")
 
-        # Detect 33-byte reject / new-protocol frames.
+        # Detect reject/new-protocol frames
         frame = parse_frame_33(raw)
-        if frame is not None:
+        if frame:
             _LOGGER.debug(
-                "[%s] 33-byte frame: type=%s, counter=%d, "
-                "tag=%s, payload=%s",
+                "[%s] 33-byte frame: type=%s, counter=%d, tag=%s, payload=%s",
                 self.name, frame.trailer_name, frame.counter,
                 frame.tag.hex(), frame.payload.hex(),
             )
-            raise ValueError(
-                f"Gateway returned a {frame.trailer_name} frame "
-                f"(0x{frame.trailer:02X}) — new AES-CBC key may be "
-                f"incorrect or protocol mismatch"
-            )
+            if frame.trailer_name == "reject":
+                raise ValueError("Reject frame received")
+            else:
+                raise ValueError(f"Unexpected frame: {frame.trailer_name}")
 
-        # Heuristic analysis before attempting decryption.
-        _log_response_heuristics(self.name, raw)
-
+        # Decode response as text (gateway should return hex string)
         try:
-            text = self.unwrap_response(raw)
-        except Exception as exc:
+            response_text = raw.decode()
+        except UnicodeDecodeError as exc:
+            _LOGGER.debug(
+                "[%s] response is not text (binary?) — first 128 bytes: %s",
+                self.name, raw[:128].hex(),
+            )
             raise ValueError(
-                f"Decryption failed ({type(exc).__name__}: {exc})"
+                f"Response is not text (expected hex string): {exc}"
             ) from exc
 
+        _LOGGER.debug(
+            "[%s] response text (first 200 chars): %s",
+            self.name, response_text[:200],
+        )
+
         try:
-            result = json.loads(text)
+            decrypted = self.decrypt(response_text)
+            result = json.loads(decrypted)
         except json.JSONDecodeError as exc:
             _LOGGER.debug(
-                "[%s] Decrypted text is not valid JSON (first 200 chars): %r",
-                self.name, text[:200],
+                "[%s] decrypted text (not JSON): %.200s",
+                self.name, decrypted,
             )
-            raise ValueError(
-                f"Decrypted response is not valid JSON: {exc}"
-            ) from exc
+            raise ValueError(f"Response is not valid JSON: {exc}") from exc
+        except ValueError:
+            raise
 
         if result.get("status") != "success":
-            _LOGGER.debug(
-                "[%s] Gateway returned status=%r (full response: %.500s)",
-                self.name, result.get("status"), text,
-            )
-            raise ValueError(f"status={result.get('status')}")
+            raise ValueError(f"Response status={result.get('status')}")
 
-        return result
-
-
-def _log_response_heuristics(proto_name: str, raw: bytes) -> None:
-    """Log heuristic properties of *raw* to help diagnose wrong-key scenarios."""
-    block_aligned = len(raw) % 16 == 0
-    try:
-        text = raw.decode("utf-8")
-        looks_like_json = text.lstrip().startswith("{") or text.lstrip().startswith("[")
-        is_ascii = all(32 <= b < 127 or b in (9, 10, 13) for b in raw)
-    except UnicodeDecodeError:
-        looks_like_json = False
-        is_ascii = False
-
-    _LOGGER.debug(
-        "[%s] Response heuristics: %d bytes, block_aligned=%s, "
-        "is_ascii=%s, looks_like_json=%s",
-        proto_name, len(raw), block_aligned, is_ascii, looks_like_json,
-    )
-    if looks_like_json:
         _LOGGER.debug(
-            "[%s] WARNING: response looks like unencrypted JSON — "
-            "gateway may not be encrypting at all. First 200 bytes: %r",
-            proto_name, raw[:200].decode(errors="replace"),
+            "[%s] connect: success in %.2f ms, %d devices",
+            self.name, elapsed_ms, len(result.get("id", [])),
         )
+        return result

@@ -6,6 +6,9 @@ __pycache__/
 # Decompiled APK
 decompiled_app/
 
+# Internal debug tools
+tools/
+
 # C extensions
 *.so
 

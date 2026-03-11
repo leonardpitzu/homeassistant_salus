@@ -197,9 +197,6 @@ class TestConnect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=mock_proto,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
-            return_value=mock_proto,
         ):
             with pytest.raises((IT600ConnectionError, IT600AuthenticationError)):
                 await gw.connect()

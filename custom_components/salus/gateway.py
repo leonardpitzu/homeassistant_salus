@@ -57,6 +57,7 @@ from .exceptions import (
 )
 from .protocol import GatewayProtocol
 from .protocol_aes_cbc import AesCbcProtocol
+from .protocol_aes_ccm import AesCcmProtocol
 from .protocol_new_aes_cbc import NewAesCbcProtocol
 from .models import (
     BinarySensorDevice,
@@ -143,8 +144,8 @@ class IT600Gateway:
         candidates: list[GatewayProtocol] = [
             AesCbcProtocol(self._euid),
             AesCbcProtocol(self._euid, aes128=True),
-            NewAesCbcProtocol(aes256=True),
-            NewAesCbcProtocol(aes256=False),
+            AesCcmProtocol(self._euid),
+            NewAesCbcProtocol(),
         ]
 
         saw_reject = False
