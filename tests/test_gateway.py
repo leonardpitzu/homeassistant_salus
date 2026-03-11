@@ -170,8 +170,6 @@ class TestConnect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=mock_proto,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
         ):
             mac = await gw.connect()
 
@@ -1906,8 +1904,6 @@ class TestProtocolAutoDetect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=mock_proto,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
         ):
             mac = await gw.connect()
 
@@ -1938,9 +1934,6 @@ class TestProtocolAutoDetect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             side_effect=_aes_factory,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
-            return_value=MagicMock(name="NewCBC", connect=AsyncMock(side_effect=NotImplementedError("nope"))),
         ):
             mac = await gw.connect()
 
@@ -1973,9 +1966,6 @@ class TestProtocolAutoDetect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             side_effect=_aes_factory,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
-            return_value=not_impl_proto,
         ):
             mac = await gw.connect()
 
@@ -2001,9 +1991,6 @@ class TestProtocolAutoDetect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=failing,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
-            return_value=failing,
         ):
             with pytest.raises(IT600AuthenticationError):
                 await gw.connect()
@@ -2023,9 +2010,6 @@ class TestProtocolAutoDetect:
 
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
-            return_value=failing,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
             return_value=failing,
         ):
             with pytest.raises(IT600ConnectionError):
@@ -2059,9 +2043,6 @@ class TestProtocolAutoDetect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=reject_proto,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
-            return_value=not_impl,
         ):
             with pytest.raises(
                 IT600UnsupportedFirmwareError, match="unsupported encryption protocol"
@@ -2097,9 +2078,6 @@ class TestProtocolAutoDetect:
         with patch(
             "custom_components.salus.gateway.AesCbcProtocol",
             return_value=new_proto,
-        ), patch(
-            "custom_components.salus.gateway.NewAesCbcProtocol",
-            return_value=not_impl,
         ):
             with pytest.raises(
                 IT600UnsupportedFirmwareError, match="unsupported encryption protocol"

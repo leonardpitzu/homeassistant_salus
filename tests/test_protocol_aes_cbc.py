@@ -7,10 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.salus.protocol_aes_cbc import (
-    AesCbcProtocol,
-    IT600Encryptor,
-)
+from custom_components.salus.protocol_aes_cbc import AesCbcProtocol
 
 
 def _mock_response(status: int = 200, body: bytes = b"") -> MagicMock:
@@ -294,14 +291,3 @@ class TestAesCbcConnect:
         with pytest.raises(ValueError, match="reject frame"):
             await proto.connect(mock_session, "192.168.1.1", 80, 5)
 
-
-# ---------------------------------------------------------------------------
-#  Backward-compatible alias
-# ---------------------------------------------------------------------------
-
-
-class TestBackwardAlias:
-    """IT600Encryptor should be an alias for AesCbcProtocol."""
-
-    def test_alias(self):
-        assert IT600Encryptor is AesCbcProtocol

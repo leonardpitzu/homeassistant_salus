@@ -57,7 +57,6 @@ from .exceptions import (
 from .protocol import GatewayProtocol
 from .protocol_aes_cbc import AesCbcProtocol
 from .protocol_aes_ccm import AesCcmProtocol
-from .protocol_new_aes_cbc import NewAesCbcProtocol
 from .models import (
     BinarySensorDevice,
     ClimateDevice,
@@ -142,8 +141,6 @@ class IT600Gateway:
             AesCbcProtocol(self._euid),
             AesCbcProtocol(self._euid, aes128=True),
             AesCcmProtocol(self._euid),
-            # NewAesCbcProtocol() — disabled; universal fixed key likely
-            # unused.  Remove entirely once confirmed by UG800 users.
         ]
 
         saw_reject = False

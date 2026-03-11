@@ -136,6 +136,3 @@ class AesCbcProtocol(GatewayProtocol):
         return result
 
 
-# Backward-compatible alias used throughout the codebase.
-IT600Encryptor = AesCbcProtocol
-
