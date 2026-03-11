@@ -6,10 +6,7 @@ import json
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-<<<<<<< HEAD
-=======
 from cryptography.exceptions import InvalidTag
->>>>>>> 3a4e5bf (Add AES-256-CCM protocol support for UG800 new-firmware gateways)
 
 from custom_components.salus.protocol_aes_ccm import (
     AesCcmProtocol,
@@ -175,11 +172,7 @@ class TestEncryptDecrypt:
     def test_wrong_euid_cannot_decrypt(self):
         ct = AesCcmProtocol(self.EUID).encrypt("secret")
         other = AesCcmProtocol("AAAAAAAAAAAAAAAA")
-<<<<<<< HEAD
-        with pytest.raises(Exception):
-=======
         with pytest.raises(InvalidTag):
->>>>>>> 3a4e5bf (Add AES-256-CCM protocol support for UG800 new-firmware gateways)
             other.decrypt(ct)
 
     def test_different_euids_produce_different_ciphertext(self):
