@@ -873,7 +873,11 @@ class IT600Gateway:
                         ],
                         fan_mode=None,
                         fan_modes=None,
-                        locked=None,
+                        locked=(
+                            ds["sTherUIS"].get("LockKey", 0) == 1
+                            if "sTherUIS" in ds
+                            else None
+                        ),
                         supported_features=(
                             SUPPORT_TARGET_TEMPERATURE | SUPPORT_PRESET_MODE
                         ),
@@ -1365,7 +1369,7 @@ class IT600Gateway:
                 "id": [
                     {
                         "data": device.data,
-                        "sTherUIS": {"LockKey": 1 if locked else 0},
+                        "sTherUIS": {"SetLockKey": 1 if locked else 0},
                     }
                 ],
             },

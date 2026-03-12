@@ -339,6 +339,56 @@ class TestRefreshClimateDevices:
         assert dev.hvac_action == CURRENT_HVAC_OFF
         assert dev.preset_mode == PRESET_OFF
 
+    async def test_it600th_locked_none_when_no_sTherUIS(self):
+        """Without sTherUIS in response, locked should be None."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "thermo_001"}, "sIT600TH": {}}]
+        resp = self._it600th_response(hold=0, running=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        dev = gw.get_climate_device("thermo_001")
+        assert dev.locked is None
+
+    async def test_it600th_locked_from_sTherUIS(self):
+        """sTherUIS.LockKey=1 → locked=True."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "thermo_001"}, "sIT600TH": {}}]
+        resp = self._it600th_response(hold=0, running=1)
+        resp["id"][0]["sTherUIS"] = {"LockKey": 1}
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        dev = gw.get_climate_device("thermo_001")
+        assert dev.locked is True
+
+    async def test_it600th_unlocked_from_sTherUIS(self):
+        """sTherUIS.LockKey=0 → locked=False."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "thermo_001"}, "sIT600TH": {}}]
+        resp = self._it600th_response(hold=0, running=1)
+        resp["id"][0]["sTherUIS"] = {"LockKey": 0}
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        dev = gw.get_climate_device("thermo_001")
+        assert dev.locked is False
+
     async def test_humidity_from_heating_control_and_sunny_setpoint(self):
         """HeatingControl=1 + SunnySetpoint_x100 → current_humidity on climate entity."""
         gw = _make_gateway()
