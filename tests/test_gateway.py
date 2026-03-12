@@ -825,7 +825,7 @@ class TestRefreshClimateErrorSensors:
     """Test sIT600TH Error* fields are aggregated into binary sensors."""
 
     @staticmethod
-    def _error_response(**errors) -> dict:
+    def _error_response(model="iT600", **errors) -> dict:
         th = {
             "LocalTemperature_x100": 2100,
             "HeatingSetpoint_x100": 2200,
@@ -847,7 +847,7 @@ class TestRefreshClimateErrorSensors:
                         "FirmwareVersion": "1.0",
                     },
                     "sBasicS": {"ManufactureName": "SALUS"},
-                    "DeviceL": {"ModelIdentifier_i": "iT600"},
+                    "DeviceL": {"ModelIdentifier_i": model},
                 }
             ],
         }
@@ -895,10 +895,10 @@ class TestRefreshClimateErrorSensors:
         assert len(attrs) == 2
 
     async def test_battery_errors_aggregated(self):
-        """Battery-related errors (Error22, Error32) go to battery sensor."""
+        """Battery-related errors (Error22, Error32) go to battery sensor on battery models."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error22=1, Error32=1)
+        resp = self._error_response(model="SQ610RF", Error22=1, Error32=1)
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -921,7 +921,7 @@ class TestRefreshClimateErrorSensors:
         """When only non-battery errors are active, battery sensor is off."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error01=1)
+        resp = self._error_response(model="SQ610RF", Error01=1)
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -939,7 +939,7 @@ class TestRefreshClimateErrorSensors:
         """Both problem and battery errors at the same time."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response(Error01=1, Error32=1, Error07=0)
+        resp = self._error_response(model="SQ610RF", Error01=1, Error32=1, Error07=0)
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -956,7 +956,7 @@ class TestRefreshClimateErrorSensors:
         """Aggregated sensors link back to the thermostat device."""
         gw = _make_gateway()
         devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
-        resp = self._error_response()
+        resp = self._error_response(model="SQ610RF")
         with patch.object(
             gw,
             "_make_encrypted_request",
@@ -968,6 +968,46 @@ class TestRefreshClimateErrorSensors:
         bs = gw.get_binary_sensor_devices()
         assert bs["err_th_problem"].parent_unique_id == "err_th"
         assert bs["err_th_battery_error"].parent_unique_id == "err_th"
+
+    async def test_mains_powered_no_battery_error_sensor(self):
+        """Mains-powered models (iT600, SQ610NH) don't get a battery error sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(model="iT600", Error22=1, Error32=1)
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        # No battery error sensor for mains-powered model
+        assert "err_th_battery_error" not in bs
+        # Battery errors are folded into the problem sensor instead
+        problem = bs["err_th_problem"]
+        assert problem.is_on is True
+        attrs = problem.extra_state_attributes["errors"]
+        assert "Paired TRV low battery" in attrs
+        assert "Low battery" in attrs
+
+    async def test_mains_powered_sq610nh_no_battery_error_sensor(self):
+        """SQ610NH (230V) should not have a battery error sensor."""
+        gw = _make_gateway()
+        devices = [{"data": {"UniID": "err_th"}, "sIT600TH": {}}]
+        resp = self._error_response(model="SQ610NH")
+        with patch.object(
+            gw,
+            "_make_encrypted_request",
+            new_callable=AsyncMock,
+            return_value=resp,
+        ):
+            await gw._refresh_climate_devices(devices)
+
+        bs = gw.get_binary_sensor_devices()
+        assert "err_th_battery_error" not in bs
+        assert "err_th_problem" in bs
 
 
 class TestRefreshSensorDevices:

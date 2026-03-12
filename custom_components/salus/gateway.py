@@ -1023,6 +1023,14 @@ class IT600Gateway:
                             else:
                                 active_problems.append(description)
 
+                    # Mains-powered models (e.g. SQ610NH) don't have a
+                    # battery, so any battery-related errors (such as
+                    # "Paired TRV low battery") are surfaced as general
+                    # problems instead of a separate battery sensor.
+                    if not is_battery_model:
+                        active_problems.extend(active_battery)
+                        active_battery = []
+
                     # Always create the aggregated problem sensor so
                     # it is visible (off = no problems).
                     problem_uid = f"{unique_id}_problem"
@@ -1043,24 +1051,26 @@ class IT600Gateway:
                         },
                     )
 
-                    # Aggregated battery-error sensor
-                    battery_err_uid = f"{unique_id}_battery_error"
-                    error_local[battery_err_uid] = BinarySensorDevice(
-                        available=device.available,
-                        name=f"{device.name} Battery problem",
-                        unique_id=battery_err_uid,
-                        is_on=len(active_battery) > 0,
-                        device_class="battery",
-                        data=ds["data"],
-                        manufacturer=device.manufacturer,
-                        model=device.model,
-                        sw_version=device.sw_version,
-                        parent_unique_id=unique_id,
-                        entity_category="diagnostic",
-                        extra_state_attributes={
-                            "errors": active_battery,
-                        },
-                    )
+                    # Aggregated battery-error sensor (only for
+                    # battery-powered models like SQ610RF).
+                    if is_battery_model:
+                        battery_err_uid = f"{unique_id}_battery_error"
+                        error_local[battery_err_uid] = BinarySensorDevice(
+                            available=device.available,
+                            name=f"{device.name} Battery problem",
+                            unique_id=battery_err_uid,
+                            is_on=len(active_battery) > 0,
+                            device_class="battery",
+                            data=ds["data"],
+                            manufacturer=device.manufacturer,
+                            model=device.model,
+                            sw_version=device.sw_version,
+                            parent_unique_id=unique_id,
+                            entity_category="diagnostic",
+                            extra_state_attributes={
+                                "errors": active_battery,
+                            },
+                        )
 
                 if send_callback:
                     self._climate_devices[device.unique_id] = device
