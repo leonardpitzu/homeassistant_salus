@@ -94,13 +94,6 @@ The gateway connection tries protocols in this order:
 
 If a protocol is rejected the integration moves to the next one automatically. A rejected attempt is identified by a characteristic 33-byte reject frame (trailer byte `0xAE`).
 
-### Status
-
-| Protocol | Status |
-|---|---|
-| Legacy AES-CBC (iT600 / UGE600) | **Fully supported** — tested on real hardware |
-| AES-CCM (UG800) | **Implemented** — reverse-engineered from APK v0.116.0; awaiting real-hardware validation |
-
 ## Debugging
 
 If you're having issues with the integration, there are two ways to enable debug logging.
