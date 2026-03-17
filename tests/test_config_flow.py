@@ -9,7 +9,11 @@ from homeassistant.const import CONF_HOST, CONF_NAME, CONF_TOKEN
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
-from custom_components.salus.const import DOMAIN
+from custom_components.salus.const import (
+    CONF_POLL_FAILURE_THRESHOLD,
+    DEFAULT_POLL_FAILURE_THRESHOLD,
+    DOMAIN,
+)
 from custom_components.salus.exceptions import (
     IT600AuthenticationError,
     IT600ConnectionError,
@@ -228,3 +232,78 @@ async def test_gateway_close_called_on_error(hass: HomeAssistant) -> None:
         )
 
     mock_gw.close.assert_awaited_once()
+
+
+# ── Options flow tests ──────────────────────────────────────────────
+
+
+async def test_options_flow_shows_form(hass: HomeAssistant) -> None:
+    """Test that the options flow shows the form with the current value."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Gateway",
+        data={
+            "config_flow_device": "user",
+            CONF_HOST: "192.168.1.100",
+            CONF_TOKEN: "001E5E0D32906128",
+        },
+        unique_id="AA:BB:CC:DD:EE:FF",
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "init"
+
+
+async def test_options_flow_saves_threshold(hass: HomeAssistant) -> None:
+    """Test that submitting the options form saves the threshold."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Gateway",
+        data={
+            "config_flow_device": "user",
+            CONF_HOST: "192.168.1.100",
+            CONF_TOKEN: "001E5E0D32906128",
+        },
+        unique_id="AA:BB:CC:DD:EE:FF",
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_POLL_FAILURE_THRESHOLD: 5},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_POLL_FAILURE_THRESHOLD] == 5
+
+
+async def test_options_flow_default_value(hass: HomeAssistant) -> None:
+    """Test that the default threshold matches the constant."""
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Gateway",
+        data={
+            "config_flow_device": "user",
+            CONF_HOST: "192.168.1.100",
+            CONF_TOKEN: "001E5E0D32906128",
+        },
+        unique_id="AA:BB:CC:DD:EE:FF",
+    )
+    entry.add_to_hass(hass)
+
+    # Submit with the default (no changes)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        user_input={CONF_POLL_FAILURE_THRESHOLD: DEFAULT_POLL_FAILURE_THRESHOLD},
+    )
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert result["data"][CONF_POLL_FAILURE_THRESHOLD] == DEFAULT_POLL_FAILURE_THRESHOLD

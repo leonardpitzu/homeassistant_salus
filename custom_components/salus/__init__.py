@@ -13,7 +13,7 @@ from homeassistant.helpers.config_validation import config_entry_only_config_sch
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 
 from .config_flow import CONF_FLOW_TYPE, CONF_USER
-from .const import DOMAIN
+from .const import CONF_POLL_FAILURE_THRESHOLD, DEFAULT_POLL_FAILURE_THRESHOLD, DOMAIN
 from .exceptions import IT600AuthenticationError, IT600ConnectionError, IT600UnsupportedFirmwareError
 from .gateway import IT600Gateway
 
@@ -94,10 +94,33 @@ async def async_setup_gateway_entry(
         return False
 
     # ── Shared coordinator ──────────────────────────────────────────
+    # Tolerate up to N consecutive poll failures before marking entities
+    # unavailable.  This prevents brief gateway hiccups (common when a
+    # thermostat is changing state) from flipping every entity to
+    # "unavailable" for a single 30-second cycle.
+    max_failures = entry.options.get(
+        CONF_POLL_FAILURE_THRESHOLD, DEFAULT_POLL_FAILURE_THRESHOLD
+    )
+    consecutive_failures = 0
+
     async def _async_update_data() -> bool:
-        async with asyncio.timeout(30):
-            await gateway.poll_status()
-        return True
+        nonlocal consecutive_failures
+        try:
+            async with asyncio.timeout(30):
+                await gateway.poll_status()
+            consecutive_failures = 0
+            return True
+        except Exception:
+            consecutive_failures += 1
+            _LOGGER.debug(
+                "Poll failed (%d/%d before unavailable)",
+                consecutive_failures,
+                max_failures,
+            )
+            if max_failures == 0 or consecutive_failures >= max_failures:
+                raise
+            # Swallow the error — keep last known good state.
+            return True
 
     coordinator = DataUpdateCoordinator(
         hass,

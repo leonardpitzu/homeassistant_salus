@@ -4,6 +4,8 @@ from __future__ import annotations
 
 # ── Home Assistant integration ──────────────────────────────────────
 DOMAIN = "salus"
+CONF_POLL_FAILURE_THRESHOLD = "poll_failure_threshold"
+DEFAULT_POLL_FAILURE_THRESHOLD = 3
 
 # ── Temperature ─────────────────────────────────────────────────────
 DEGREE = "°"

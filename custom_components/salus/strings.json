@@ -1,4 +1,13 @@
 {
+  "options": {
+    "step": {
+      "init": {
+        "data": {
+          "poll_failure_threshold": "Poll failures before unavailable (0 = immediate)"
+        }
+      }
+    }
+  },
   "config": {
     "flow_title": "Salus: {name}",
     "step": {
