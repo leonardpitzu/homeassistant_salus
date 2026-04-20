@@ -150,6 +150,7 @@ ENERGY_METER_VOLTAGE_MODELS: frozenset[str] = frozenset(
 TRV_VOLTAGE_MODELS: frozenset[str] = frozenset(
     {
         "TRV3RF",
+        "it600MINITRV",
     }
 )
 

@@ -109,6 +109,7 @@ class IT600Gateway:
 
         self._sensor_devices: dict[str, SensorDevice] = {}
         self._battery_sensor_devices: dict[str, SensorDevice] = {}
+        self._binsensor_battery_devices: dict[str, SensorDevice] = {}
         self._humidity_sensor_devices: dict[str, SensorDevice] = {}
         self._energy_sensor_devices: dict[str, SensorDevice] = {}
         self._sensor_update_callbacks: list[Callable[..., Awaitable[None]]] = []
@@ -605,9 +606,11 @@ class IT600Gateway:
         self, devices: list[Any], send_callback: bool = False
     ) -> None:
         local: dict[str, BinarySensorDevice] = {}
+        trv_batt_local: dict[str, SensorDevice] = {}
 
         if not devices:
             self._binary_sensor_devices = local
+            self._binsensor_battery_devices = trv_batt_local
             return
 
         status = await self._make_encrypted_request(
@@ -696,6 +699,53 @@ class IT600Gateway:
                         entity_category="diagnostic",
                     )
 
+                # TRV low battery from sIT600I.TRVError22
+                # it600MINITRV devices don't have sPowerS or sIASZS,
+                # but report low battery via TRVError22 in sIT600I.
+                if model == "it600MINITRV":
+                    trv_low_batt = ds.get("sIT600I", {}).get("TRVError22")
+                    if trv_low_batt is not None:
+                        lb_uid = f"{unique_id}_low_battery"
+                        if lb_uid not in local:
+                            local[lb_uid] = BinarySensorDevice(
+                                available=device.available,
+                                name=f"{device.name} Low battery",
+                                unique_id=lb_uid,
+                                is_on=trv_low_batt == 1,
+                                device_class="battery",
+                                data=ds["data"],
+                                manufacturer=device.manufacturer,
+                                model=device.model,
+                                sw_version=device.sw_version,
+                                parent_unique_id=unique_id,
+                                entity_category="diagnostic",
+                            )
+
+                # Voltage-based battery sensor for models with sPowerS
+                # that are only in binary_sensor refresh (not climate).
+                power_s = ds.get("sPowerS")
+                if power_s is not None and model is not None:
+                    raw_voltage_x10 = power_s.get("BatteryVoltage_x10")
+                    if raw_voltage_x10 is not None:
+                        voltage = raw_voltage_x10 / 10.0
+                        pct = self._voltage_to_battery_pct(voltage, model)
+                        if pct is not None:
+                            battery_uid = f"{unique_id}_battery"
+                            trv_batt_local[battery_uid] = SensorDevice(
+                                available=device.available,
+                                name=f"{device.name} Battery",
+                                unique_id=battery_uid,
+                                state=pct,
+                                unit_of_measurement="%",
+                                device_class="battery",
+                                data=ds["data"],
+                                manufacturer=device.manufacturer,
+                                model=device.model,
+                                sw_version=device.sw_version,
+                                parent_unique_id=unique_id,
+                                entity_category="diagnostic",
+                            )
+
                 if send_callback:
                     self._binary_sensor_devices[device.unique_id] = device
                     await self._send_binary_sensor_update_callback(device.unique_id)
@@ -703,6 +753,7 @@ class IT600Gateway:
                 _LOGGER.exception("Failed to poll binary sensor %s", unique_id)
 
         self._binary_sensor_devices = local
+        self._binsensor_battery_devices = trv_batt_local
 
     # ---- climate ----
 
@@ -1227,6 +1278,7 @@ class IT600Gateway:
         return {
             **self._sensor_devices,
             **self._battery_sensor_devices,
+            **self._binsensor_battery_devices,
             **self._humidity_sensor_devices,
             **self._energy_sensor_devices,
         }
@@ -1235,6 +1287,7 @@ class IT600Gateway:
         return (
             self._sensor_devices.get(device_id)
             or self._battery_sensor_devices.get(device_id)
+            or self._binsensor_battery_devices.get(device_id)
             or self._humidity_sensor_devices.get(device_id)
             or self._energy_sensor_devices.get(device_id)
         )
