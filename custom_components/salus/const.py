@@ -8,8 +8,7 @@ CONF_POLL_FAILURE_THRESHOLD = "poll_failure_threshold"
 DEFAULT_POLL_FAILURE_THRESHOLD = 3
 
 # ── Temperature ─────────────────────────────────────────────────────
-DEGREE = "°"
-TEMP_CELSIUS = f"{DEGREE}C"
+TEMP_CELSIUS = "°C"
 
 # ── Library-internal feature bit-flags ──────────────────────────────
 SUPPORT_TARGET_TEMPERATURE = 1
