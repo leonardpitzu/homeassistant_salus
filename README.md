@@ -4,7 +4,7 @@
 > Development has moved to **[homeassistant_salus by Jordi-14](https://github.com/Jordi-14/homeassistant_salus)**.
 > That fork is on track to become part of HACS default repositories, has a superior architecture, and is actively maintained by two developers, giving it a much better chance of long-term survival. Please use it instead.
 
-A custom [Home Assistant](https://www.home-assistant.io/) integration that lets you control and monitor your [Salus iT600](https://salus-controls.com/) smart home devices **locally** through the UGE600 or UG800 gateway — thermostats, smart plugs, roller shutters, sensors, and more, all without cloud dependency.
+A custom [Home Assistant](https://www.home-assistant.io/) integration that lets you control and monitor your [Salus iT600](https://salus-controls.com/) smart home devices **locally** through the UGE600 or UG800 gateway - thermostats, smart plugs, roller shutters, sensors, and more, all without cloud dependency.
 
 ## Features
 
@@ -12,8 +12,8 @@ A custom [Home Assistant](https://www.home-assistant.io/) integration that lets 
 
 One climate entity per thermostat connected to the gateway. Two thermostat families are supported:
 
-- **iT600 thermostats** (e.g. SQ610RF) — heat/off/auto modes, Follow Schedule / Permanent Hold / Off presets, current & target temperature, humidity, 0.5 °C increments.
-- **FC600 fan-coil controllers** — heat/cool/auto modes, five presets (Follow Schedule, Permanent Hold, Temporary Hold, Eco, Off), fan modes (auto/high/medium/low/off), separate heating/cooling setpoints.
+- **iT600 thermostats** (e.g. SQ610RF) - heat/off/auto modes, Follow Schedule / Permanent Hold / Off presets, current & target temperature, humidity, 0.5 °C increments.
+- **FC600 fan-coil controllers** - heat/cool/auto modes, five presets (Follow Schedule, Permanent Hold, Temporary Hold, Eco, Off), fan modes (auto/high/medium/low/off), separate heating/cooling setpoints.
 
 ### Sensors
 
@@ -38,7 +38,7 @@ One climate entity per thermostat connected to the gateway. Two thermostat famil
 
 ### Covers
 
-One cover entity per roller shutter or blind (SR600, RS600). Supports **open**, **close**, and **set position** (0–100 %).
+One cover entity per roller shutter or blind (SR600, RS600). Supports **open**, **close**, and **set position** (0-100 %).
 
 ### Switches
 
@@ -53,7 +53,7 @@ One lock entity per thermostat that supports child lock. Allows **locking/unlock
 ### HACS (recommended)
 
 1. Open HACS in your Home Assistant instance.
-2. Go to **Integrations** → **⋮** → **Custom repositories**.
+2. Go to **Integrations** -> **⋮** -> **Custom repositories**.
 3. Add `https://github.com/leonardpitzu/homeassistant_salus` as an **Integration**.
 4. Search for **Salus iT600** and install it.
 5. Restart Home Assistant.
@@ -65,7 +65,7 @@ One lock entity per thermostat that supports child lock. Allows **locking/unlock
 
 ## Configuration
 
-1. Go to **Settings** → **Devices & Services** → **Add Integration**.
+1. Go to **Settings** -> **Devices & Services** -> **Add Integration**.
 2. Search for **Salus iT600**.
 3. Enter your gateway's **IP address** and **EUID** (the first 16 characters printed under the gateway's micro-USB port).
 4. The integration will discover all devices on the gateway and create entities automatically.
@@ -82,7 +82,7 @@ Salus gateways encrypt all local API traffic. Different gateway models and firmw
 |---|---|---|
 | **Gateways** | UGE600, older UG800 firmware | UG800 with newer firmware |
 | **Cipher** | AES-256-CBC (fallback: AES-128-CBC) | AES-256-CCM (authenticated encryption) |
-| **Key derivation** | `MD5("Salus-{euid}")` — static, derived from the gateway EUID | EUID bytes + hardcoded suffix — 32-byte key derived from the gateway EUID |
+| **Key derivation** | `MD5("Salus-{euid}")` - static, derived from the gateway EUID | EUID bytes + hardcoded suffix - 32-byte key derived from the gateway EUID |
 | **IV / nonce** | Fixed 16-byte IV | 8-byte random nonce (3 random + 2-byte counter + 3-byte timestamp) |
 | **Authentication** | None | 8-byte MAC tag (CBC-MAC) |
 | **Padding** | PKCS7 | None (CCM handles arbitrary lengths) |
@@ -92,9 +92,9 @@ Salus gateways encrypt all local API traffic. Different gateway models and firmw
 
 The gateway connection tries protocols in this order:
 
-1. **AES-256-CBC** — legacy iT600 / UGE600 gateways
-2. **AES-128-CBC** — intermediate firmware variant
-3. **AES-CCM** — newer UG800 firmware
+1. **AES-256-CBC** - legacy iT600 / UGE600 gateways
+2. **AES-128-CBC** - intermediate firmware variant
+3. **AES-CCM** - newer UG800 firmware
 
 If a protocol is rejected the integration moves to the next one automatically. A rejected attempt is identified by a characteristic 33-byte reject frame (trailer byte `0xAE`).
 
@@ -102,7 +102,7 @@ If a protocol is rejected the integration moves to the next one automatically. A
 
 If you're having issues with the integration, there are two ways to enable debug logging.
 
-### Option 1 — YAML configuration
+### Option 1 - YAML configuration
 
 Add the following to your `configuration.yaml` and restart Home Assistant:
 
@@ -113,13 +113,13 @@ logger:
     custom_components.salus: debug
 ```
 
-### Option 2 — Home Assistant UI
+### Option 2 - Home Assistant UI
 
-1. Go to **Settings** → **Devices & Services**.
+1. Go to **Settings** -> **Devices & Services**.
 2. Find the **Salus iT600** integration and click the **⋮** menu.
 3. Select **Enable debug logging**.
 4. Reproduce the issue.
-5. Click **Disable debug logging** — the browser will download a log file you can inspect or attach to a bug report.
+5. Click **Disable debug logging** - the browser will download a log file you can inspect or attach to a bug report.
 
 This method is useful for one-off troubleshooting since it automatically reverts to the normal log level once you stop it.
 
@@ -139,4 +139,4 @@ SQ610RF, SQ610RF(WB), SQ610RFNH, FC600, SP600, SPE600, SR600, RS600, SW600, OS60
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
